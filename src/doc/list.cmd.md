@@ -1,1 +1,0 @@
-List all plugins (and their versions) in the manifest file.

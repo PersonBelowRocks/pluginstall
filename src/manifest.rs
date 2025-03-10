@@ -1,11 +1,13 @@
 //! Manifest file processing logic
 
-use smol::fs::File;
-use smol::io::AsyncReadExt;
+use std::collections::HashMap;
 use std::path::Path;
 
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+
 use crate::hangar_plugin::HangarPlugin;
-use crate::spiget_plugin::SpigetPlugin;
+use crate::spiget_plugin::ManifestSpigetPlugin;
 
 pub static DEFAULT_MANIFEST_FILE_NAME: &str = "pluginstall.manifest.toml";
 
@@ -13,10 +15,9 @@ pub static DEFAULT_MANIFEST_FILE_NAME: &str = "pluginstall.manifest.toml";
 /// Usually obtained from deserializing a manifest file.
 #[derive(serde::Deserialize, Clone, Debug)]
 pub struct Manifest {
-    meta: ManifestMeta,
-    // rename this to make it more readable in the actual toml document
-    #[serde(rename = "plugin")]
-    plugins: Vec<Plugin>,
+    pub meta: ManifestMeta,
+    // maps plugin names to their details
+    pub plugin: HashMap<String, PluginDownloadSpec>,
 }
 
 /// Metadata for a plugin manifest. Is currently just a human-friendly the name of the manifest.
@@ -27,17 +28,6 @@ pub struct ManifestMeta {
     manifest_name: String,
 }
 
-/// An entry for a plugin in a manifest. Specifies various metadata about the plugin,
-/// but the details of where and how to download a plugin are specified in [`PluginDownloadSpec`]
-#[derive(serde::Deserialize, Clone, Debug)]
-#[serde(tag = "type")]
-pub struct Plugin {
-    /// The name of this plugin to be displayed in the CLI output and logs.
-    name: String,
-    /// Where and how to download the plugin.
-    download: PluginDownloadSpec,
-}
-
 /// An enum of various different supported download methods for the plugin.
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(tag = "type")]
@@ -46,7 +36,7 @@ pub enum PluginDownloadSpec {
     /// Gets a plugin from Hangar using the Hangar API.
     Hangar(HangarPlugin),
     /// Uses the Spiget API to download the plugin.
-    Spiget(SpigetPlugin),
+    Spiget(ManifestSpigetPlugin),
     /// Gets a plugin from Jenkins using the Jenkins API.
     Jenkins,
 }
@@ -80,7 +70,7 @@ impl Manifest {
             .read_to_string(&mut manifest_file_contents)
             .await?;
 
-        Ok(toml::de::from_str(&manifest_file_contents)?)
+        Self::parse(manifest_file_contents)
     }
 
     #[inline]

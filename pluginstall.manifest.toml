@@ -1,0 +1,6 @@
+[meta]
+name = "test-manifest"
+
+[plugin.gsit]
+type = "spiget"
+resource_id = 62325

@@ -1,6 +1,7 @@
 //! CLI interface logic
 
 use crate::manifest::{ManifestResult, DEFAULT_MANIFEST_FILE_NAME};
+use crate::subcommands;
 use std::borrow::Cow;
 use std::env::current_dir;
 use std::path::{Path, PathBuf};
@@ -9,23 +10,27 @@ use std::path::{Path, PathBuf};
 #[derive(clap::Parser, Clone, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
-    #[arg(short, long, value_name = "MANIFEST_FILE", help = include_str!("doc/manifest.arg.md"))]
-    #[doc = include_str!("doc/manifest.arg.md")]
+    /// The path to the manifest file.
+    #[arg(
+        short,
+        long,
+        value_name = "MANIFEST_FILE",
+        help = "The path to the plugin manifest file."
+    )]
     pub manifest: Option<PathBuf>,
 
+    #[arg(long, action=clap::ArgAction::SetTrue, help = "Use JSON output instead of human readable output.")]
+    pub json: bool,
+
+    /// The subcommand
     #[command(subcommand)]
     pub command: Commands,
 }
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum Commands {
-    #[command(about = include_str!("doc/manifest.arg.md"))]
-    #[doc = include_str!("doc/manifest.arg.md")]
-    List {
-        #[arg(short = 'U', long, action=clap::ArgAction::SetTrue, help = include_str!("doc/cmd.list.upgradable.arg.md"))]
-        #[doc = include_str!("doc/cmd.list.upgradable.arg.md")]
-        upgradable: bool,
-    },
+    #[command(about = "List all versions of a plugin.")]
+    List(subcommands::List),
 }
 
 impl Cli {

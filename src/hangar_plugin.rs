@@ -8,3 +8,5 @@ pub struct HangarPlugin {
 /// Describes a project on Hangar.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Deserialize, dm::Into, dm::From)]
 pub struct HangarSlug(String);
+
+pub struct HangarResourceDetails {}
