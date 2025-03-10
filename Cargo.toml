@@ -1,0 +1,18 @@
+[package]
+name = "pluginstall"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.93"
+clap = { version = "4.5.21", features = ["derive"] }
+derive_more = { version = "2.0.1", features = ["full"] }
+env_logger = { version = "0.11.5", features = ["color"] }
+log = "0.4.22"
+owo-colors = "4.1.0"
+reqwest = "0.12.9"
+serde = { version = "1.0.215", features = ["derive"] }
+smol = "2.0.2"
+thiserror = "2.0.4"
+toml = "0.8.19"
+url = "2.5.4"

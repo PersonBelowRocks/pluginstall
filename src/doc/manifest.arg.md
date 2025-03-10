@@ -1,0 +1,1 @@
+The path to the plugin manifest file.
