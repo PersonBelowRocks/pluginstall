@@ -10,16 +10,16 @@ use std::path::PathBuf;
 
 mod cli;
 mod manifest;
-mod util;
 mod session;
+mod util;
 // These modules contain the "adapter" logic for downloading from various different sources.
-mod spiget_plugin;
-mod jenkins_plugin;
 mod hangar_plugin;
+mod jenkins_plugin;
+mod spiget_plugin;
 
 fn main() -> anyhow::Result<()> {
     util::setup_logger();
-    
+
     // start the async runtime and block
     smol::block_on(async_main())
 }
@@ -34,6 +34,6 @@ async fn async_main() -> anyhow::Result<()> {
     let manifest = Manifest::parse_from_file(manifest_path.as_ref()).await?;
 
     debug!("manifest = {manifest:#?}");
-    
+
     Ok(())
 }

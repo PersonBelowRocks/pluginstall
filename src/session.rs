@@ -1,14 +1,14 @@
 //! Logic for the HTTP(S) session (and communication) with the various plugin APIs.
 
-use rq::{Request, Url};
+use rq::{Method, Request, StatusCode, Url};
 use spiget_endpoints::{sub_resource_id, SPIGET_API_RESOURCE_DETAILS};
 
-use crate::spiget_plugin::ResourceId;
+use crate::spiget_plugin::{ApiResourceDetails, ResourceId, SpigetError};
 use std::path::PathBuf;
 
 /// A session that can be used to talk to various plugin APIs.
 pub struct Session {
-    rq_client: rq::Client
+    rq_client: rq::Client,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -17,10 +17,14 @@ pub enum Error {
     ReqwestError(#[from] rq::Error),
     #[error("URL parse error: {0}")]
     UrlParseError(#[from] url::ParseError),
+    #[error("Spiget error: {0}")]
+    SpigetError(#[from] SpigetError),
+    #[error("Error deserializing JSON: {0}")]
+    DeserializationError(#[from] serde_json::Error),
 }
 
 /// The user agent to be used by pluginstall when talking to APIs.
-pub static USER_AGENT: &str = "pluginstall";
+pub static USER_AGENT: &str = "pluginstall CLI (https://github.com/PersonBelowRocks/pluginstall)";
 
 /// The base URL for the Spiget API.
 pub static SPIGET_API_BASE_URL: &str = "https://api.spiget.org/v2";
@@ -52,21 +56,30 @@ impl Session {
     }
 
     /// Create a new request for the given URL, with various default options.
-    fn new_request(&self, url: Url, method: rq::Method) -> rq::RequestBuilder {
-        let mut req = self.rq_client.request(method, url);
-        
-        todo!()
-
+    fn request(&self, url: Url, method: rq::Method) -> rq::RequestBuilder {
+        self.rq_client
+            .request(method, url)
+            .header("User-Agent", USER_AGENT)
     }
 
     /// Get a plugin from the Spiget API with the given resource ID.
     #[inline]
-    pub async fn get_spiget_plugin(&self, resource_id: ResourceId) -> Result<String, Error> {
+    pub async fn spiget_plugin_details(
+        &self,
+        resource_id: ResourceId,
+    ) -> Result<ApiResourceDetails, Error> {
         let subbed = sub_resource_id(SPIGET_API_RESOURCE_DETAILS, resource_id);
-        let mut url = Url::parse(SPIGET_API_BASE_URL)?.join(&subbed)?;
+        let url = Url::parse(SPIGET_API_BASE_URL)?.join(&subbed)?;
 
-        let req = self.new_request(url, rq::Method::GET);
+        let response = self.request(url, Method::GET).send().await?;
 
-        todo!()
+        match response.status() {
+            StatusCode::OK => {
+                let raw_json = response.bytes().await?;
+                Ok(serde_json::de::from_slice::<ApiResourceDetails>(&raw_json)?)
+            }
+            StatusCode::NOT_FOUND => Err(SpigetError::ResourceNotFound(resource_id).into()),
+            _ => Err(SpigetError::UnknownApiError(response.status()).into()),
+        }
     }
 }

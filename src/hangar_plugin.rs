@@ -2,7 +2,7 @@
 
 #[derive(serde::Deserialize, Clone, Debug)]
 pub struct HangarPlugin {
-    slug: HangarSlug
+    slug: HangarSlug,
 }
 
 /// Describes a project on Hangar.

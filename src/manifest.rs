@@ -16,7 +16,7 @@ pub struct Manifest {
     meta: ManifestMeta,
     // rename this to make it more readable in the actual toml document
     #[serde(rename = "plugin")]
-    plugins: Vec<Plugin>
+    plugins: Vec<Plugin>,
 }
 
 /// Metadata for a plugin manifest. Is currently just a human-friendly the name of the manifest.
@@ -24,7 +24,7 @@ pub struct Manifest {
 pub struct ManifestMeta {
     /// A human-friendly name for this manifest.
     #[serde(rename = "name")]
-    manifest_name: String
+    manifest_name: String,
 }
 
 /// An entry for a plugin in a manifest. Specifies various metadata about the plugin,
@@ -35,7 +35,7 @@ pub struct Plugin {
     /// The name of this plugin to be displayed in the CLI output and logs.
     name: String,
     /// Where and how to download the plugin.
-    download: PluginDownloadSpec
+    download: PluginDownloadSpec,
 }
 
 /// An enum of various different supported download methods for the plugin.
