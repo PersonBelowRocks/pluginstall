@@ -36,7 +36,9 @@ pub struct Cli {
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum Commands {
     #[command(about = "List all versions of a plugin.")]
-    List(subcommands::List),
+    Versions(subcommands::Versions),
+    #[command(about = "Show info about a plugin.")]
+    Info(subcommands::Info),
 }
 
 macro_rules! run_subcommand {
@@ -68,7 +70,8 @@ impl Commands {
         manifest: &Manifest,
         output_manager: &OutputManager,
     ) -> ExitCode {
-        run_subcommand!(self, List, session, manifest, output_manager);
+        run_subcommand!(self, Versions, session, manifest, output_manager);
+        run_subcommand!(self, Info, session, manifest, output_manager);
 
         unreachable!();
     }

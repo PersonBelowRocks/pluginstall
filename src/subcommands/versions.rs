@@ -1,4 +1,4 @@
-//! The 'list' subcommand for listing versions of a plugin.
+//! The 'versions' subcommand for listing versions of a plugin.
 use clap::Args;
 
 use crate::{
@@ -10,9 +10,11 @@ use crate::{
     util::{CliTable, CliTableFormatting},
 };
 
-/// The 'list' subcommand.
+use super::PluginNotFoundError;
+
+/// The 'versions' subcommand.
 #[derive(Args, Debug, Clone)]
-pub struct List {
+pub struct Versions {
     #[arg(
         value_name = "PLUGIN_NAME",
         help = "The name of the plugin in the manifest file."
@@ -34,7 +36,7 @@ pub struct List {
     )]
     pub download_url: bool,
     #[arg(
-        short = 't',
+        short = 'F',
         long,
         value_name = "TIME_FORMAT",
         default_value = "%Y-%m-%d",
@@ -45,43 +47,30 @@ pub struct List {
 
 /// The output of the list command. Written to stdout with [`DataDisplay`].
 #[derive(Debug, serde::Serialize)]
-pub struct ListOutput {
+pub struct VersionsOutput {
     /// The format that datetimes should be written as when writing in human-readable mode.
     #[serde(skip)]
-    pub cfg: ListOutputCfg,
+    pub cfg: VersionsOutputCfg,
     pub details: PluginDetails,
     pub versions: Vec<PluginVersion>,
 }
 
 /// Options for how data should be formatted to the terminal.
 #[derive(Debug)]
-pub struct ListOutputCfg {
+pub struct VersionsOutputCfg {
     /// The datetime format
     pub strftime_format: String,
     /// Whether download URLs for versions should be written
     pub write_download_urls: bool,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum ListError {
-    #[error("Could not find a plugin with the name '{0}' in the manifest.")]
-    PluginNotFound(String),
-}
-
-impl DataDisplay for ListOutput {
+impl DataDisplay for VersionsOutput {
     fn write_json(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
         let json_string = serde_json::to_string(self).unwrap();
         write!(w, "{json_string}")
     }
 
     fn write_hr(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
-        // The "header" of our output
-        writeln!(
-            w,
-            "Latest versions for '{0}' ({1})",
-            self.details.manifest_name, self.details.page_url
-        )?;
-
         if self.cfg.write_download_urls {
             // this table has 4 columns since the download URL is included
             let mut table = CliTable::new([
@@ -142,16 +131,16 @@ impl DataDisplay for ListOutput {
     }
 }
 
-impl Subcommand for List {
-    type Output = ListOutput;
+impl Subcommand for Versions {
+    type Output = VersionsOutput;
 
-    /// Run the list command.
+    /// Run the versions command.
     #[inline]
     async fn run(&self, session: &Session, manifest: &Manifest) -> anyhow::Result<Self::Output> {
         let manifest_name = &self.plugin_name;
 
         let Some(plugin_manifest) = manifest.plugin.get(manifest_name) else {
-            return Err(ListError::PluginNotFound(self.plugin_name.clone()).into());
+            return Err(PluginNotFoundError(self.plugin_name.clone()).into());
         };
 
         let out = match plugin_manifest {
@@ -170,8 +159,8 @@ impl Subcommand for List {
                     plugin_type: PluginApiType::Spiget,
                 };
 
-                ListOutput {
-                    cfg: ListOutputCfg {
+                VersionsOutput {
+                    cfg: VersionsOutputCfg {
                         strftime_format: self.time_format.clone(),
                         write_download_urls: self.download_url,
                     },

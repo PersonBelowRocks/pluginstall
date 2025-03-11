@@ -50,10 +50,10 @@ pub struct PluginDetails {
     Copy, Clone, PartialEq, Eq, Debug, Hash, dm::Display, serde::Serialize, serde::Deserialize,
 )]
 pub enum PluginApiType {
-    #[display("hangar")]
+    #[display("Hangar")]
     Hangar,
-    #[display("spiget")]
+    #[display("Spiget")]
     Spiget,
-    #[display("jenkins")]
+    #[display("Jenkins")]
     Jenkins,
 }
