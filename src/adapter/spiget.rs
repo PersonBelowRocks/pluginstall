@@ -1,12 +1,21 @@
 //! Logic for plugins downloaded from spiget.
 
-use std::collections::HashMap;
-
-use chrono::{TimeZone, Utc};
-use rq::StatusCode;
+use chrono::Utc;
+use rq::{StatusCode, Url};
 use uuid::Uuid;
 
-use crate::session::{self, Session};
+use crate::session::{
+    self,
+    spiget_endpoints::{
+        SPIGET_API_RESOURCE_VERSION_DOWNLOAD, SPIGET_RESOURCE_ID_PATTERN,
+        SPIGET_RESOURCE_VERSION_PATTERN,
+    },
+    Session, SPIGET_API_BASE_URL,
+};
+
+use super::PluginVersion;
+
+pub static SPIGOT_WEBSITE_RESOURCE_PAGE: &str = "https://www.spigotmc.org/resources/{resource_id}";
 
 /// A Spiget plugin entry in the manifest.
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -46,6 +55,14 @@ impl SpigetPlugin {
         })
     }
 
+    /// Get the URL to the page for this plugin on the Spigot website.
+    #[inline]
+    pub fn plugin_page(&self) -> Url {
+        let subbed = SPIGOT_WEBSITE_RESOURCE_PAGE
+            .replace(SPIGET_RESOURCE_ID_PATTERN, &self.details.id.to_string());
+        Url::parse(&subbed).unwrap()
+    }
+
     /// Get the versions of this resource from the API. This updates the [`SpigetPlugin`] and returns a slice to the newly obtained versions.
     #[inline]
     pub async fn get_versions(
@@ -67,6 +84,37 @@ impl SpigetPlugin {
 
         self.versions = resource_versions;
         Ok(&self.versions[..])
+    }
+
+    /// Iterate over the generalized versions of this plugin.
+    ///
+    /// The iterator will try to iterate in order of version publishing date; the latest versions will come first.
+    pub fn general_versions(&self) -> impl Iterator<Item = PluginVersion> + use<'_> {
+        let base_url = Url::parse(SPIGET_API_BASE_URL).unwrap();
+
+        self.versions.iter().filter_map(move |version| {
+            Some(PluginVersion {
+                version_identifier: version.id.to_string(),
+                version_name: version.name.clone(),
+                download_url: {
+                    let subbed = SPIGET_API_RESOURCE_VERSION_DOWNLOAD
+                        .replace(SPIGET_RESOURCE_ID_PATTERN, &self.details.id.to_string())
+                        .replace(SPIGET_RESOURCE_VERSION_PATTERN, &version.id.to_string());
+
+                    match base_url.join(&subbed) {
+                        Ok(url) => url,
+                        Err(error) => {
+                            log::error!(
+                                "Could not join '{subbed}' with base URL '{base_url}': {error}"
+                            );
+
+                            return None;
+                        }
+                    }
+                },
+                publish_date: Some(version.release_date),
+            })
+        })
     }
 }
 

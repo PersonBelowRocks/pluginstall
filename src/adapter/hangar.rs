@@ -1,7 +1,7 @@
 //! Logic for plugins downloaded from Paper's hangar using the Hangar API.
 
 #[derive(serde::Deserialize, Clone, Debug)]
-pub struct HangarPlugin {
+pub struct ManifestHangarPlugin {
     slug: HangarSlug,
 }
 

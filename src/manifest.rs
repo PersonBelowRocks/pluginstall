@@ -6,8 +6,8 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
-use crate::hangar_plugin::HangarPlugin;
-use crate::spiget_plugin::ManifestSpigetPlugin;
+use crate::adapter::hangar::ManifestHangarPlugin;
+use crate::adapter::spiget::ManifestSpigetPlugin;
 
 pub static DEFAULT_MANIFEST_FILE_NAME: &str = "pluginstall.manifest.toml";
 
@@ -20,7 +20,7 @@ pub struct Manifest {
     pub plugin: HashMap<String, PluginDownloadSpec>,
 }
 
-/// Metadata for a plugin manifest. Is currently just a human-friendly the name of the manifest.
+/// Metadata for a plugin manifest. Is currently just a human-friendly name of the manifest.
 #[derive(serde::Deserialize, Clone, Debug)]
 pub struct ManifestMeta {
     /// A human-friendly name for this manifest.
@@ -34,7 +34,7 @@ pub struct ManifestMeta {
 #[serde(rename_all = "kebab-case")]
 pub enum PluginDownloadSpec {
     /// Gets a plugin from Hangar using the Hangar API.
-    Hangar(HangarPlugin),
+    Hangar(ManifestHangarPlugin),
     /// Uses the Spiget API to download the plugin.
     Spiget(ManifestSpigetPlugin),
     /// Gets a plugin from Jenkins using the Jenkins API.

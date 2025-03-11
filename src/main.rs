@@ -1,15 +1,14 @@
 extern crate derive_more as dm;
 extern crate reqwest as rq;
 
+use std::process::ExitCode;
+
 use crate::cli::Cli;
-use crate::manifest::{Manifest, DEFAULT_MANIFEST_FILE_NAME};
+use crate::manifest::Manifest;
 use clap::Parser;
-use cli::Commands;
 use log::*;
-use manifest::PluginDownloadSpec;
 use output::OutputManager;
 use session::Session;
-use spiget_plugin::SpigetPlugin;
 
 mod cli;
 mod manifest;
@@ -18,11 +17,9 @@ mod session;
 mod subcommands;
 mod util;
 // These modules contain the "adapter" logic for downloading from various different sources.
-mod hangar_plugin;
-mod jenkins_plugin;
-mod spiget_plugin;
+mod adapter;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ExitCode {
     util::setup_logger();
 
     // start the async runtime and block
@@ -31,11 +28,11 @@ fn main() -> anyhow::Result<()> {
         .build()
         .unwrap();
 
-    runtime.block_on(async_main())
+    runtime.block_on(async_main()).unwrap()
 }
 
 /// The async entrypoint of the app. The main function will block here when the app is ran.
-async fn async_main() -> anyhow::Result<()> {
+async fn async_main() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
 
     debug!("CLI args = {cli:#?}");
@@ -46,29 +43,9 @@ async fn async_main() -> anyhow::Result<()> {
     debug!("manifest = {manifest:#?}");
 
     let session = Session::new();
-    let output_manager = OutputManager::new(cli.json);
+    let output_manager = OutputManager::new(cli.json, !cli.no_newline);
 
-    match cli.command {
-        Commands::List(cmd) => {
-            let output = cmd.run(&session, &manifest)?;
-            output_manager.display(output)?;
-        }
-    }
+    let exit_code = cli.command.run(&session, &manifest, &output_manager).await;
 
-    for (plugin_name, plugin) in manifest.plugin {
-        debug!("plugin name = '{plugin_name}'");
-
-        if let PluginDownloadSpec::Spiget(manifest_plugin_entry) = plugin {
-            debug!(
-                "getting a plugin with resource ID {:?} from Spiget",
-                manifest_plugin_entry.resource_id
-            );
-
-            let plugin = SpigetPlugin::new(&session, manifest_plugin_entry.resource_id).await?;
-
-            debug!("spiget plugin = {plugin:#?}");
-        }
-    }
-
-    Ok(())
+    Ok(exit_code)
 }

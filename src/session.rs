@@ -1,13 +1,12 @@
 //! Logic for the HTTP(S) session (and communication) with the various plugin APIs.
 
 use log::debug;
-use rq::{Method, Request, Response, StatusCode, Url};
+use rq::{Method, Response, Url};
 use spiget_endpoints::{
     SPIGET_API_RESOURCE_DETAILS, SPIGET_API_RESOURCE_VERSIONS, SPIGET_RESOURCE_ID_PATTERN,
-    SPIGET_RESOURCE_VERSION_PATTERN,
 };
 
-use crate::spiget_plugin::{ResourceId, SpigetError, SpigetResourceDetails};
+use crate::adapter::spiget::ResourceId;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -35,6 +34,11 @@ pub(crate) mod spiget_endpoints {
     pub static SPIGET_API_RESOURCE_DETAILS: &str = "resources/{resource_id}";
     /// Endpoint for getting versions of a resource from the Spiget API.
     pub static SPIGET_API_RESOURCE_VERSIONS: &str = "resources/{resource_id}/versions";
+    /// Endpoint for downloading a version of a resource.
+    ///
+    /// This endpoint may not download the file directly but instead redirect to the true download URL.
+    pub static SPIGET_API_RESOURCE_VERSION_DOWNLOAD: &str =
+        "resources/{resource_id}/versions/{version}/download";
 }
 
 /// A session that can be used to talk to various plugin APIs.
