@@ -39,6 +39,8 @@ pub enum Commands {
     Versions(subcommands::Versions),
     #[command(about = "Show info about a plugin.")]
     Info(subcommands::Info),
+    #[command(about = "Download a plugin.")]
+    Download(subcommands::Download),
 }
 
 macro_rules! run_subcommand {
@@ -72,6 +74,7 @@ impl Commands {
     ) -> ExitCode {
         run_subcommand!(self, Versions, session, manifest, output_manager);
         run_subcommand!(self, Info, session, manifest, output_manager);
+        run_subcommand!(self, Download, session, manifest, output_manager);
 
         unreachable!();
     }

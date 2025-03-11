@@ -57,3 +57,18 @@ pub enum PluginApiType {
     #[display("Jenkins")]
     Jenkins,
 }
+
+/// A plugin version specification. Either a version name, a version identifier, or "latest" can be used to specify a version.
+/// This enum unifies all three ways into one type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, dm::Display)]
+pub enum VersionSpec {
+    /// A version name. The exact format of the name depends on the plugin and the plugin's API.
+    #[display("{}", 0)]
+    Name(String),
+    /// A version identifier. The exact format of the identifier depends on the plugin and the plugin's API.
+    #[display("{}", 0)]
+    Identifier(String),
+    /// The most recent version. Only get the most recent version, do not consider anything else.
+    #[display("latest")]
+    Latest,
+}

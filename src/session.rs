@@ -3,7 +3,8 @@
 use log::debug;
 use rq::{Method, Response, Url};
 use spiget_endpoints::{
-    SPIGET_API_RESOURCE_DETAILS, SPIGET_API_RESOURCE_VERSIONS, SPIGET_RESOURCE_ID_PATTERN,
+    SPIGET_API_RESOURCE_DETAILS, SPIGET_API_RESOURCE_VERSION, SPIGET_API_RESOURCE_VERSIONS,
+    SPIGET_RESOURCE_ID_PATTERN, SPIGET_RESOURCE_VERSION_PATTERN,
 };
 
 use crate::adapter::spiget::ResourceId;
@@ -34,6 +35,9 @@ pub(crate) mod spiget_endpoints {
     pub static SPIGET_API_RESOURCE_DETAILS: &str = "resources/{resource_id}";
     /// Endpoint for getting versions of a resource from the Spiget API.
     pub static SPIGET_API_RESOURCE_VERSIONS: &str = "resources/{resource_id}/versions";
+    /// Endpoint for getting information about a specific Spiget resource version.
+    pub static SPIGET_API_RESOURCE_VERSION: &str = "resources/{resource_id}/versions/{version}";
+
     /// Endpoint for downloading a version of a resource.
     ///
     /// This endpoint may not download the file directly but instead redirect to the true download URL.
@@ -101,6 +105,23 @@ impl Session {
         };
 
         url.set_query(Some(&query_str));
+
+        let response = self.request(url, Method::GET).send().await?;
+        Ok(response)
+    }
+
+    /// Get information about a version of a Spiget resource.
+    #[inline]
+    pub async fn spiget_resource_version(
+        &self,
+        resource_id: ResourceId,
+        version_id: u64,
+    ) -> Result<Response, Error> {
+        let subbed = SPIGET_API_RESOURCE_VERSION
+            .replace(SPIGET_RESOURCE_ID_PATTERN, &resource_id.to_string())
+            .replace(SPIGET_RESOURCE_VERSION_PATTERN, &version_id.to_string());
+
+        let url = self.spiget_base_url.join(&subbed)?;
 
         let response = self.request(url, Method::GET).send().await?;
         Ok(response)

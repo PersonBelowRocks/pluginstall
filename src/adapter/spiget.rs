@@ -1,5 +1,7 @@
 //! Logic for plugins downloaded from spiget.
 
+use std::str::FromStr;
+
 use chrono::Utc;
 use rq::{StatusCode, Url};
 use uuid::Uuid;
@@ -13,7 +15,7 @@ use crate::session::{
     Session, SPIGET_API_BASE_URL,
 };
 
-use super::PluginVersion;
+use super::{PluginDetails, PluginVersion, VersionSpec};
 
 pub static SPIGOT_WEBSITE_RESOURCE_PAGE: &str = "https://www.spigotmc.org/resources/{resource_id}";
 
@@ -116,6 +118,87 @@ impl SpigetPlugin {
             })
         })
     }
+
+    /// Get the download information (including the download URL) for the provided version of the plugin.
+    /// The returned download URL may redirect to the "true" download.
+    /// Furthermore, the returned download URL is not guaranteed to work, but is likely to.
+    ///
+    /// Will return [`None`] if the specified version could not be found for this resource.
+    #[inline]
+    pub async fn get_download_information(
+        &self,
+        session: &Session,
+        version: &VersionSpec,
+    ) -> Result<Option<SpigetPluginDownload>, SpigetError> {
+        match version {
+            VersionSpec::Latest => {
+                todo!()
+            }
+            VersionSpec::Identifier(id) => {
+                // this is the easy case. we could just compute the download URL immediately but we want to make sure that this plugin actually
+                // has a version with this ID so we don't return a broken URL.
+
+                let version_id =
+                    u64::from_str(id.as_str()).map_err(|e| SpigetError::VersionIdParseError(e))?;
+
+                let response = session
+                    .spiget_resource_version(self.details.id, version_id)
+                    .await?;
+
+                // return None if the requested version could not be found
+                if response.status() == StatusCode::NOT_FOUND {
+                    return Ok(None);
+                }
+
+                let raw_json = response.bytes().await.map_err(session::Error::from)?;
+
+                log::debug!("Deserializing JSON, version = {version_id}");
+                log::debug!("Raw JSON = {}", String::from_utf8_lossy(&raw_json));
+
+                let resource_version =
+                    serde_json::de::from_slice::<SpigetResourceVersion>(&raw_json)?;
+
+                let download_url = {
+                    let subbed = SPIGET_API_RESOURCE_VERSION_DOWNLOAD
+                        .replace(SPIGET_RESOURCE_ID_PATTERN, &self.details.id.to_string())
+                        .replace(SPIGET_RESOURCE_VERSION_PATTERN, &version_id.to_string());
+
+                    Url::parse(SPIGET_API_BASE_URL)
+                        .unwrap()
+                        .join(&subbed)
+                        .unwrap()
+                };
+
+                Ok(Some(SpigetPluginDownload {
+                    download_url,
+                    version_details: resource_version,
+                }))
+            }
+            VersionSpec::Name(name) => {
+                todo!()
+            }
+        }
+    }
+}
+
+/// Information regarding the downloading of a version of a Spiget plugin.
+#[derive(Debug, Clone)]
+pub struct SpigetPluginDownload {
+    /// The URL to download the file from.
+    pub download_url: Url,
+    /// Details about this version.
+    pub version_details: SpigetResourceVersion,
+}
+
+impl From<SpigetPluginDownload> for PluginVersion {
+    fn from(value: SpigetPluginDownload) -> Self {
+        PluginVersion {
+            version_identifier: value.version_details.id.to_string(),
+            version_name: value.version_details.name,
+            download_url: value.download_url,
+            publish_date: Some(value.version_details.release_date),
+        }
+    }
 }
 
 /// A resource ID for a Spigot resource (a plugin basically).
@@ -139,6 +222,8 @@ pub enum SpigetError {
     DeserializationError(#[from] serde_json::Error),
     #[error("HTTP error: {0}")]
     SessionError(#[from] session::Error),
+    #[error("Error parsing version ID: {0}")]
+    VersionIdParseError(<u64 as FromStr>::Err),
 }
 
 /// A response from the Spiget API with resource details.
