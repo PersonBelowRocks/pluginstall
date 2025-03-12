@@ -1,7 +1,14 @@
 use env_logger::WriteStyle;
+use hyperx::header::{ContentDisposition, DispositionParam};
 use log::LevelFilter;
 use owo_colors::{AnsiColors, OwoColorize};
-use std::{array, cmp::max, io::Write};
+use std::{
+    array,
+    cmp::max,
+    io::Write,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 pub const LOG_LEVEL_COLORS: [AnsiColors; 5] = [
     AnsiColors::BrightRed,
@@ -36,6 +43,79 @@ pub(crate) fn setup_logger() {
             )
         })
         .init();
+}
+
+/// Get the attachment file name from a 'content-disposition' header.
+///
+/// Will return [`None`] if the file name could not be extracted or if no file name was specified.
+///
+/// # Warning
+/// This function will only extract the file name from the 'content-disposition' header, and will do no
+/// validation of the resulting file name. It more or less takes the header at its word, and returns the file name as-is.
+///
+/// This can be very problematic if the file name is used directly, since someone could specify a file name that's actually a path,
+/// and trick you into writing to or reading from that path.
+///
+/// Make sure you do the proper validation of the file name provided by this function before you use it!
+/// (the [`validate_file_name`] function may come in handy here.)
+#[inline]
+pub fn content_disposition_file_name(content_disposition: &ContentDisposition) -> Option<PathBuf> {
+    content_disposition
+        .parameters
+        .iter()
+        .find_map(|param| -> Option<PathBuf> {
+            let DispositionParam::Filename(_charset, _language_tag, file_name) = param else {
+                return None;
+            };
+
+            let utf8_file_name = String::from_utf8_lossy(file_name);
+            let path = PathBuf::from_str(utf8_file_name.as_ref()).unwrap();
+
+            Some(path)
+        })
+}
+
+/// Checks if a path is a valid file name.
+/// Will return `true` if the path is a "valid" file name, and `false` if not.
+///
+/// # Valid File Names
+/// A valid file name is a path with no parent directories, and no trailing path separator.
+/// Examples include:
+/// - `.hello.txt`
+/// - `valid`
+/// - `somefile.jar`
+/// - `.lots.of.dots`
+///
+/// # Invalid File Names
+/// Examples of invalid file names are:
+/// - `/long/big/path`
+/// - `subdirectory/file.exe`
+/// - `directory/`
+/// - `/invalid.json`
+/// - `/`
+/// - `.`
+#[inline]
+pub fn validate_file_name(file_name_candidate: &Path) -> bool {
+    // the file name must not reference any parent directories!
+    if file_name_candidate.parent() != Some(Path::new("")) {
+        return false;
+    }
+
+    // file name can't be a directory
+    if file_name_candidate.is_dir() {
+        return false;
+    }
+
+    // don't allow any other shenanigans with file names (like the file name being just a single ".")
+    let Some(file_name) = file_name_candidate.file_name() else {
+        return false;
+    };
+
+    if file_name_candidate != file_name {
+        return false;
+    }
+
+    true
 }
 
 /// A table that can be written to the terminal in a text representation.

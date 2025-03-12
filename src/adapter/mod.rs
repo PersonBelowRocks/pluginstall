@@ -63,10 +63,10 @@ pub enum PluginApiType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, dm::Display)]
 pub enum VersionSpec {
     /// A version name. The exact format of the name depends on the plugin and the plugin's API.
-    #[display("{}", 0)]
+    #[display("{}", _0)]
     Name(String),
     /// A version identifier. The exact format of the identifier depends on the plugin and the plugin's API.
-    #[display("{}", 0)]
+    #[display("{}", _0)]
     Identifier(String),
     /// The most recent version. Only get the most recent version, do not consider anything else.
     #[display("latest")]

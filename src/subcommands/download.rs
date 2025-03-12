@@ -1,6 +1,6 @@
 //! The 'download' subcommand for downloading a plugin in the manifest.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 use owo_colors::OwoColorize;
@@ -55,6 +55,8 @@ pub struct Download {
 /// The output of the 'download' subcommand.
 #[derive(Debug, serde::Serialize)]
 pub struct DownloadOutput {
+    pub download_size: u64,
+    pub download_path: PathBuf,
     pub details: PluginDetails,
     pub version: PluginVersion,
 }
@@ -77,7 +79,26 @@ impl DataDisplay for DownloadOutput {
     }
 
     fn write_hr(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
-        write!(w, "{:?}", self)
+        writeln!(
+            w,
+            "Downloaded version '{0}' of '{1}' ({2})",
+            self.version.version_name.green(),
+            self.details.manifest_name.green(),
+            pretty_bytes::converter::convert(self.download_size as f64),
+        )?;
+
+        match self.version.publish_date {
+            Some(datetime) => writeln!(w, "Version was released on {}", datetime.green())?,
+            None => writeln!(w, "No release date for this version could be found.")?,
+        }
+
+        writeln!(
+            w,
+            "File was downloaded to '{0}'",
+            &self.download_path.to_string_lossy()
+        )?;
+
+        Ok(())
     }
 }
 
@@ -95,12 +116,15 @@ impl Download {
             _ => panic!("You cannot specify both version identifier and version name."),
         }
     }
-}
 
-impl Subcommand for Download {
-    type Output = DownloadOutput;
-
-    async fn run(&self, session: &Session, manifest: &Manifest) -> anyhow::Result<Self::Output> {
+    /// Get the download information from the arguments/options issued to this command.
+    /// The returned [`PluginDetails`] and [`PluginVersion`] may be used to carry out the actual download operation itself.
+    #[inline]
+    async fn get_download_information(
+        &self,
+        session: &Session,
+        manifest: &Manifest,
+    ) -> anyhow::Result<(PluginDetails, PluginVersion)> {
         let manifest_name = &self.plugin_name;
 
         // these two options are mutually exclusive
@@ -114,7 +138,7 @@ impl Subcommand for Download {
             return Err(PluginNotFoundError(self.plugin_name.clone()).into());
         };
 
-        match plugin_manifest {
+        Ok(match plugin_manifest {
             PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
                 let spiget_plugin =
                     SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
@@ -137,12 +161,35 @@ impl Subcommand for Download {
                     plugin_type: PluginApiType::Spiget,
                 };
 
-                Ok(DownloadOutput {
-                    details: details,
-                    version: download_info.into(),
-                })
+                (details, download_info.into())
             }
             _ => todo!(),
-        }
+        })
+    }
+}
+
+impl Subcommand for Download {
+    type Output = DownloadOutput;
+
+    async fn run(&self, session: &Session, manifest: &Manifest) -> anyhow::Result<Self::Output> {
+        let (plugin_details, plugin_version) =
+            self.get_download_information(session, manifest).await?;
+
+        let output_directory = self
+            .out_dir
+            .as_ref()
+            .map(<PathBuf as AsRef<Path>>::as_ref)
+            .unwrap_or(Path::new("."));
+
+        let (output_path, size) = session
+            .download_file(&plugin_version.download_url, output_directory)
+            .await?;
+
+        Ok(DownloadOutput {
+            download_size: size,
+            download_path: output_path,
+            details: plugin_details,
+            version: plugin_version,
+        })
     }
 }

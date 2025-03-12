@@ -119,6 +119,48 @@ impl SpigetPlugin {
         })
     }
 
+    /// Get a resource version from the provided version spec. Will return [`None`] if no resource could be found for the given spec.
+    #[inline]
+    pub async fn get_version(
+        &self,
+        session: &Session,
+        version_spec: &VersionSpec,
+    ) -> Result<Option<SpigetResourceVersion>, SpigetError> {
+        let version = match version_spec {
+            // in these cases the resource version can be retrieved immediately without searching
+            spec @ (VersionSpec::Latest | VersionSpec::Identifier(_)) => {
+                let response = match spec {
+                    VersionSpec::Latest => session.spiget_latest_version(self.details.id).await?,
+                    VersionSpec::Identifier(identifier) => {
+                        let version_id =
+                            u64::from_str(identifier).map_err(SpigetError::VersionIdParseError)?;
+
+                        session
+                            .spiget_resource_version(self.details.id, version_id)
+                            .await?
+                    }
+                    // we handle the VersionSpec::Name case in the outer match block
+                    _ => unreachable!(),
+                };
+
+                // a status code of 404 means that the version (or resource?) was not found.
+                // either no latest version was published (i.e., no version was ever published),
+                // or the given version identifier didn't exist for this resource
+                if response.status() == StatusCode::NOT_FOUND {
+                    return Ok(None);
+                }
+
+                let raw_json = response.bytes().await.map_err(session::Error::from)?;
+                serde_json::de::from_slice::<SpigetResourceVersion>(&raw_json)?
+            }
+            VersionSpec::Name(name) => {
+                todo!()
+            }
+        };
+
+        Ok(Some(version))
+    }
+
     /// Get the download information (including the download URL) for the provided version of the plugin.
     /// The returned download URL may redirect to the "true" download.
     /// Furthermore, the returned download URL is not guaranteed to work, but is likely to.
@@ -130,54 +172,27 @@ impl SpigetPlugin {
         session: &Session,
         version: &VersionSpec,
     ) -> Result<Option<SpigetPluginDownload>, SpigetError> {
-        match version {
-            VersionSpec::Latest => {
-                todo!()
+        // if this is None, then no version could be found, which means we shouldn't provide a download URL
+        let version = self.get_version(session, version).await?;
+
+        Ok(version.map(|resource_version| {
+            let version_id = resource_version.id;
+
+            let subbed = SPIGET_API_RESOURCE_VERSION_DOWNLOAD
+                .replace(SPIGET_RESOURCE_ID_PATTERN, &self.details.id.to_string())
+                .replace(SPIGET_RESOURCE_VERSION_PATTERN, &version_id.to_string());
+
+            // this is the URL we download the version from
+            let download_url = Url::parse(SPIGET_API_BASE_URL)
+                .unwrap()
+                .join(&subbed)
+                .unwrap();
+
+            SpigetPluginDownload {
+                download_url,
+                version_details: resource_version,
             }
-            VersionSpec::Identifier(id) => {
-                // this is the easy case. we could just compute the download URL immediately but we want to make sure that this plugin actually
-                // has a version with this ID so we don't return a broken URL.
-
-                let version_id =
-                    u64::from_str(id.as_str()).map_err(|e| SpigetError::VersionIdParseError(e))?;
-
-                let response = session
-                    .spiget_resource_version(self.details.id, version_id)
-                    .await?;
-
-                // return None if the requested version could not be found
-                if response.status() == StatusCode::NOT_FOUND {
-                    return Ok(None);
-                }
-
-                let raw_json = response.bytes().await.map_err(session::Error::from)?;
-
-                log::debug!("Deserializing JSON, version = {version_id}");
-                log::debug!("Raw JSON = {}", String::from_utf8_lossy(&raw_json));
-
-                let resource_version =
-                    serde_json::de::from_slice::<SpigetResourceVersion>(&raw_json)?;
-
-                let download_url = {
-                    let subbed = SPIGET_API_RESOURCE_VERSION_DOWNLOAD
-                        .replace(SPIGET_RESOURCE_ID_PATTERN, &self.details.id.to_string())
-                        .replace(SPIGET_RESOURCE_VERSION_PATTERN, &version_id.to_string());
-
-                    Url::parse(SPIGET_API_BASE_URL)
-                        .unwrap()
-                        .join(&subbed)
-                        .unwrap()
-                };
-
-                Ok(Some(SpigetPluginDownload {
-                    download_url,
-                    version_details: resource_version,
-                }))
-            }
-            VersionSpec::Name(name) => {
-                todo!()
-            }
-        }
+        }))
     }
 }
 

@@ -1,0 +1,39 @@
+[package]
+name = "hyperx"
+version = "1.4.0"
+description = "Hyper's typed header module, eXtracted and improved"
+readme = "README.md"
+documentation = "https://docs.rs/hyperx"
+repository = "https://github.com/dekellum/hyperx"
+license = "MIT"
+authors = ["David Kellum <dek-oss@gravitext.com>"]
+keywords = ["http", "hyper", "hyperium"]
+categories = [
+    "network-programming",
+    "web-programming::http-client",
+    "web-programming::http-server"
+]
+exclude = [
+    ".gitignore",
+    ".travis.yml",
+    "appveyor.yml",
+]
+build = "build.rs"
+
+[dependencies]
+base64              = { version="^0.13" }
+bytes               = { version="^1.0" }
+http                = { version="^1.2.0" }
+httpdate            = { version="^1" }
+language-tags       = { version="^0.3" }
+mime                = { version="^0.3" }
+percent-encoding    = { version="^2.1" }
+unicase             = { version="^2.6" }
+
+[features]
+nightly = []
+compat = [] # no-op for backward compatibility
+headers = []
+
+[package.metadata.docs.rs]
+features = ["headers"]
