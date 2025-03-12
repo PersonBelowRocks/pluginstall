@@ -7,17 +7,17 @@ use crate::cli::Cli;
 use crate::manifest::Manifest;
 use clap::Parser;
 use log::*;
-use output::OutputManager;
-use session::Session;
+use output::CliOutput;
+use session::IoSession;
 
+mod adapter;
+mod caching;
 mod cli;
 mod manifest;
 mod output;
 mod session;
 mod subcommands;
 mod util;
-// These modules contain the "adapter" logic for downloading from various different sources.
-mod adapter;
 
 fn main() -> ExitCode {
     util::setup_logger();
@@ -42,10 +42,10 @@ async fn async_main() -> anyhow::Result<ExitCode> {
 
     debug!("manifest = {manifest:#?}");
 
-    let session = Session::new();
-    let output_manager = OutputManager::new(cli.json, !cli.no_newline);
+    let cli_output = CliOutput::new(cli.json, !cli.no_newline);
+    let session = IoSession::new(cli_output);
 
-    let exit_code = cli.command.run(&session, &manifest, &output_manager).await;
+    let exit_code = cli.command.run(&session, &manifest).await;
 
     Ok(exit_code)
 }

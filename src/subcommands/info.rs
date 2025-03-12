@@ -10,7 +10,7 @@ use crate::{
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
-    session::Session,
+    session::IoSession,
 };
 
 use super::PluginNotFoundError;
@@ -51,7 +51,7 @@ impl DataDisplay for InfoOutput {
 impl Subcommand for Info {
     type Output = InfoOutput;
 
-    async fn run(&self, session: &Session, manifest: &Manifest) -> anyhow::Result<Self::Output> {
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<Self::Output> {
         let manifest_name = &self.plugin_name;
 
         let Some(plugin_manifest) = manifest.plugin.get(manifest_name) else {

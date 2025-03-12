@@ -6,7 +6,7 @@ use owo_colors::OwoColorize;
 
 /// A helper struct for controlling the output from the CLI. Data can be "written" to the output manager, and it will
 /// choose the appropriate format to output it in.
-pub struct OutputManager {
+pub struct CliOutput {
     /// Output as JSON?
     json: bool,
     /// Write a newline at the end of the output?
@@ -30,7 +30,7 @@ pub trait DataDisplay {
     fn write_hr(&self, w: &mut impl Write) -> Result<(), std::io::Error>;
 }
 
-impl OutputManager {
+impl CliOutput {
     /// Create a new output manager.
     ///
     /// If the [`json`] parameter is true then this output manager will write data in JSON format instead of a human-readable format.

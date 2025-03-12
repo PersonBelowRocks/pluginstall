@@ -1,8 +1,8 @@
 //! CLI interface logic
 
 use crate::manifest::{Manifest, ManifestResult, DEFAULT_MANIFEST_FILE_NAME};
-use crate::output::{DataDisplay, OutputManager};
-use crate::session::Session;
+use crate::output::{CliOutput, DataDisplay};
+use crate::session::IoSession;
 use crate::subcommands;
 use std::borrow::Cow;
 use std::env::current_dir;
@@ -44,17 +44,13 @@ pub enum Commands {
 }
 
 macro_rules! run_subcommand {
-    ($commands:expr, $variant:ident, $session:expr, $manifest:expr, $output_mgr:expr) => {
+    ($commands:expr, $variant:ident, $session:expr, $manifest:expr) => {
         if let Commands::$variant(cmd) = $commands {
             match cmd.run($session, $manifest).await {
-                Ok(output) => {
-                    $output_mgr.display(output).unwrap();
-
-                    return ExitCode::SUCCESS;
-                }
+                Ok(output) => return ExitCode::SUCCESS,
                 Err(error) => {
-                    let std_err = AsRef::<dyn std::error::Error>::as_ref(&error);
-                    $output_mgr.error(std_err).unwrap();
+                    // let std_err = AsRef::<dyn std::error::Error>::as_ref(&error);
+                    log::error!("{}", error);
 
                     return ExitCode::FAILURE;
                 }
@@ -66,15 +62,10 @@ macro_rules! run_subcommand {
 impl Commands {
     /// Run the subcommand.
     #[inline]
-    pub async fn run(
-        &self,
-        session: &Session,
-        manifest: &Manifest,
-        output_manager: &OutputManager,
-    ) -> ExitCode {
-        run_subcommand!(self, Versions, session, manifest, output_manager);
-        run_subcommand!(self, Info, session, manifest, output_manager);
-        run_subcommand!(self, Download, session, manifest, output_manager);
+    pub async fn run(&self, session: &IoSession, manifest: &Manifest) -> ExitCode {
+        run_subcommand!(self, Versions, session, manifest);
+        run_subcommand!(self, Info, session, manifest);
+        run_subcommand!(self, Download, session, manifest);
 
         unreachable!();
     }
@@ -82,10 +73,7 @@ impl Commands {
 
 /// Trait implemented by subcommands.
 pub trait Subcommand {
-    /// The output type that should be displayed to the user.
-    type Output: DataDisplay;
-
-    async fn run(&self, session: &Session, manifest: &Manifest) -> anyhow::Result<Self::Output>;
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<()>;
 }
 
 impl Cli {

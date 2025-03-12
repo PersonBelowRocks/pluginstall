@@ -21,7 +21,8 @@ use tokio::fs::File;
 use tokio_util::io::StreamReader;
 
 use crate::{
-    adapter::spiget::ResourceId,
+    adapter::spiget::{ResourceId, SpigetApiClient},
+    output::CliOutput,
     util::{content_disposition_file_name, validate_file_name},
 };
 
@@ -54,7 +55,7 @@ pub enum DownloadError {
 }
 
 /// The user agent to be used by pluginstall when talking to APIs.
-pub static USER_AGENT: &str = "pluginstall CLI (https://github.com/PersonBelowRocks/pluginstall)";
+pub static USER_AGENT: &str = "pluginstall CLI app (github PersonBelowRocks/pluginstall)";
 
 /// The base URL for the Spiget API.
 pub static SPIGET_API_BASE_URL: &str = "https://api.spiget.org/v2/";
@@ -83,21 +84,38 @@ pub(crate) mod spiget_endpoints {
         "resources/{resource_id}/versions/{version}/download";
 }
 
-/// A session that can be used to talk to various plugin APIs.
-pub struct Session {
-    spiget_base_url: Url,
-    hangar_base_url: Url,
-    rq_client: rq::Client,
+/// A session for IO operations. Functions as a bridge between both HTTP APIs and the local filesystem (including local filesystem caches).
+pub struct IoSession {
+    client: rq::Client,
+    spiget: SpigetApiClient,
+    cli_output: CliOutput,
 }
 
-impl Session {
+impl IoSession {
     /// Creates a new API session.
-    pub fn new() -> Self {
+    pub fn new(cli_output: CliOutput) -> Self {
+        let client = rq::Client::builder()
+            .user_agent(USER_AGENT)
+            .build()
+            .unwrap();
+
         Self {
-            spiget_base_url: Url::parse(SPIGET_API_BASE_URL).unwrap(),
-            hangar_base_url: Url::parse(HANGAR_API_BASE_URL).unwrap(),
-            rq_client: rq::Client::new(),
+            spiget: SpigetApiClient::new(&client),
+            cli_output,
+            client,
         }
+    }
+
+    /// Get the Spiget API client.
+    #[inline]
+    pub fn spiget(&self) -> &SpigetApiClient {
+        &self.spiget
+    }
+
+    /// Get the CLI output controller.
+    #[inline]
+    pub fn cli_output(&self) -> &CliOutput {
+        &self.cli_output
     }
 
     /// Download a file. Files will be downloaded into the provided `output_directory` with the file name
@@ -111,7 +129,8 @@ impl Session {
         output_directory: impl AsRef<Path>,
     ) -> Result<(PathBuf, u64), DownloadError> {
         let response = self
-            .request(url, Method::GET)
+            .client
+            .get(url.clone())
             .send()
             .await
             .map_err(Error::from)?;
@@ -169,82 +188,5 @@ impl Session {
         output_file.sync_all().await?;
 
         Ok((output_path, downloaded_and_copied))
-    }
-
-    /// Create a new request for the given URL, with various default options.
-    fn request(&self, url: &Url, method: rq::Method) -> rq::RequestBuilder {
-        debug!("session: {method:?} {url}");
-
-        self.rq_client
-            .request(method, url.clone())
-            .header("User-Agent", USER_AGENT)
-    }
-
-    /// Get the details of a resource with the given resource ID from the Spiget API.
-    #[inline]
-    pub async fn spiget_resource_details(
-        &self,
-        resource_id: ResourceId,
-    ) -> Result<Response, Error> {
-        let subbed = SPIGET_API_RESOURCE_DETAILS
-            .replace(SPIGET_RESOURCE_ID_PATTERN, &resource_id.to_string());
-        let url = self.spiget_base_url.join(&subbed)?;
-
-        let response = self.request(&url, Method::GET).send().await?;
-        Ok(response)
-    }
-
-    /// Get the versions of a resource with the given resource ID from the Spiget API.
-    /// The number of versions returned in the response can be controlled with the `limit` parameter.
-    #[inline]
-    pub async fn spiget_resource_versions(
-        &self,
-        resource_id: ResourceId,
-        limit: Option<u64>,
-    ) -> Result<Response, Error> {
-        let subbed = SPIGET_API_RESOURCE_VERSIONS
-            .replace(SPIGET_RESOURCE_ID_PATTERN, &resource_id.to_string());
-        let mut url = self.spiget_base_url.join(&subbed)?;
-
-        // we always want to sort by the release date so that we get the newest versions first
-        let query_str = match limit {
-            // set the size of the returned array if needed
-            Some(limit) => format!("size={limit}&sort=-releaseDate"),
-            None => format!("sort=-releaseDate"),
-        };
-
-        url.set_query(Some(&query_str));
-
-        let response = self.request(&url, Method::GET).send().await?;
-        Ok(response)
-    }
-
-    /// Get information about a version of a Spiget resource.
-    #[inline]
-    pub async fn spiget_resource_version(
-        &self,
-        resource_id: ResourceId,
-        version_id: u64,
-    ) -> Result<Response, Error> {
-        let subbed = SPIGET_API_RESOURCE_VERSION
-            .replace(SPIGET_RESOURCE_ID_PATTERN, &resource_id.to_string())
-            .replace(SPIGET_RESOURCE_VERSION_PATTERN, &version_id.to_string());
-
-        let url = self.spiget_base_url.join(&subbed)?;
-
-        let response = self.request(&url, Method::GET).send().await?;
-        Ok(response)
-    }
-
-    /// Get the latest versin of a resource from the Spiget API.
-    #[inline]
-    pub async fn spiget_latest_version(&self, resource_id: ResourceId) -> Result<Response, Error> {
-        let subbed = SPIGET_API_RESOURCE_LATEST_VERSION
-            .replace(SPIGET_RESOURCE_ID_PATTERN, &resource_id.to_string());
-
-        let url = self.spiget_base_url.join(&subbed)?;
-
-        let response = self.request(&url, Method::GET).send().await?;
-        Ok(response)
     }
 }

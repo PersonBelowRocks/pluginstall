@@ -13,7 +13,7 @@ use crate::{
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
-    session::Session,
+    session::IoSession,
 };
 
 use super::PluginNotFoundError;
@@ -122,7 +122,7 @@ impl Download {
     #[inline]
     async fn get_download_information(
         &self,
-        session: &Session,
+        session: &IoSession,
         manifest: &Manifest,
     ) -> anyhow::Result<(PluginDetails, PluginVersion)> {
         let manifest_name = &self.plugin_name;
@@ -171,7 +171,7 @@ impl Download {
 impl Subcommand for Download {
     type Output = DownloadOutput;
 
-    async fn run(&self, session: &Session, manifest: &Manifest) -> anyhow::Result<Self::Output> {
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<Self::Output> {
         let (plugin_details, plugin_version) =
             self.get_download_information(session, manifest).await?;
 
