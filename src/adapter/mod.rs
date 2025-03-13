@@ -5,10 +5,14 @@ use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
 use rq::Url;
+use serde::ser::SerializeMap;
 
 pub mod hangar;
 pub mod jenkins;
 pub mod spiget;
+
+/// The number of fields in a serialized [`PluginVersion`].
+const PLUGIN_VERSION_SERIALIZED_FIELDS: usize = 4;
 
 /// Represents a plugin version.
 ///
@@ -43,7 +47,33 @@ pub trait PluginVersion {
     /// The datetime that this version was published on.
     /// May be [`None`] if no publishing datetime could be found.
     fn publish_date(&self) -> Option<DateTime<Utc>>;
+
+    /// Generalized serialization for all [`PluginVersion`].
+    ///
+    /// Implementors of this trait should use the default implementation of this method,
+    /// unless there's a really good reason to write a custom implementation.
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let publish_date = self.publish_date();
+        let num_fields = match publish_date {
+            Some(_) => PLUGIN_VERSION_SERIALIZED_FIELDS,
+            None => PLUGIN_VERSION_SERIALIZED_FIELDS - 1,
+        };
+
+        let mut map = serializer.serialize_map(Some(num_fields))?;
+
+        map.serialize_entry("version_identifier", self.version_identifier().as_ref());
+        map.serialize_entry("version_name", self.version_name().as_ref());
+        map.serialize_entry("download_url", self.download_url());
+
+        publish_date.map(|datetime| map.serialize_entry("publish_date", &datetime));
+
+        map.end()
+    }
 }
+
+/// The number of fields in a serialized [`PluginDetails`].
+const PLUGIN_DETAILS_SERIALIZED_FIELDS: usize = 3;
 
 /// The details of a plugin.
 pub trait PluginDetails {
@@ -60,6 +90,21 @@ pub trait PluginDetails {
 
     /// The type of API that this plugin comes from.
     fn plugin_type(&self) -> PluginApiType;
+
+    /// Generalized serialization for all [`PluginDetails`].
+    ///
+    /// Implementors of this trait should use the default implementation of this method,
+    /// unless there's a really good reason to write a custom implementation.
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(PLUGIN_DETAILS_SERIALIZED_FIELDS))?;
+
+        map.serialize_entry("manifest_name", self.manifest_name());
+        map.serialize_entry("page_url", self.page_url());
+        map.serialize_entry("plugin_type", &self.plugin_type());
+
+        map.end()
+    }
 }
 
 /// The type of API that a plugin is sourced from.

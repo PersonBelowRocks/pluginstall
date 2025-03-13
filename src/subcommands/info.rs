@@ -27,11 +27,12 @@ pub struct Info {
 
 /// The output of the 'info' subcommand.
 #[derive(Debug, serde::Serialize)]
-pub struct InfoOutput {
-    pub details: PluginDetails,
+pub struct InfoOutput<P: PluginDetails> {
+    #[serde(serialize_with = "crate::adapter::PluginDetails::serialize")]
+    pub details: P,
 }
 
-impl DataDisplay for InfoOutput {
+impl<P: PluginDetails> DataDisplay for InfoOutput<P> {
     fn write_json(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
         let json_string = serde_json::to_string(self).unwrap();
         write!(w, "{json_string}")
@@ -41,17 +42,15 @@ impl DataDisplay for InfoOutput {
         writeln!(
             w,
             "{0} plugin '{1}' ({2})",
-            self.details.plugin_type,
-            self.details.manifest_name.bright_green(),
-            self.details.page_url.bright_green(),
+            self.details.plugin_type(),
+            self.details.manifest_name().bright_green(),
+            self.details.page_url().bright_green(),
         )
     }
 }
 
 impl Subcommand for Info {
-    type Output = InfoOutput;
-
-    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<Self::Output> {
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<()> {
         let manifest_name = &self.plugin_name;
 
         let Some(plugin_manifest) = manifest.plugin.get(manifest_name) else {
@@ -60,6 +59,11 @@ impl Subcommand for Info {
 
         match plugin_manifest {
             PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
+                let spiget_plugin_details = session
+                    .spiget_api()
+                    .resource_details(spiget_plugin_manifest.resource_id)
+                    .await?;
+
                 let spiget_plugin =
                     SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
 

@@ -47,7 +47,7 @@ impl CliOutput {
 
     /// Write the data display type to `stdout`. This method locks `stdout`.
     #[inline]
-    pub fn display<T: DataDisplay>(&self, data: T) -> Result<(), std::io::Error> {
+    pub fn display<T: DataDisplay>(&self, data: &T) -> Result<(), std::io::Error> {
         let mut lock = self.stdout.lock();
 
         if self.json {

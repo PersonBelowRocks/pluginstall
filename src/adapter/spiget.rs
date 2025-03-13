@@ -1,10 +1,14 @@
 //! Logic for plugins downloaded from spiget.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use chrono::Utc;
+use indexmap::{map::Values, IndexMap};
 use rq::{Response, StatusCode, Url};
+use tokio::sync::{OnceCell, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use uuid::Uuid;
+
+use crate::session::{IoSession, IoSessionResult};
 
 use super::PluginVersion;
 
@@ -356,5 +360,83 @@ impl SpigetApiClient {
             ))
             .unwrap();
         Ok(download_url)
+    }
+}
+
+/// A plugin on the Spiget API. Provides a friendly interface for getting information about the plugin.
+#[derive(Clone)]
+pub struct SpigetPlugin {
+    io: IoSession,
+    resource_details: SpigetResourceJson,
+    versions: Arc<RwLock<IndexMap<VersionId, SpigetVersionJson>>>,
+}
+
+impl SpigetPlugin {
+    /// Create a new [`SpigetPlugin`] in the given [`IoSession`].
+    ///
+    /// May return a Spiget API error if the resource details could not be fetched.
+    #[inline]
+    pub async fn new(
+        session: &IoSession,
+        resource_id: ResourceId,
+    ) -> IoSessionResult<SpigetPlugin> {
+        let resource_details = session.spiget_api().resource_details(resource_id).await?;
+
+        Ok(Self {
+            io: session.clone(),
+            resource_details,
+            versions: Default::default(),
+        })
+    }
+
+    #[inline]
+    pub fn resource_id(&self) -> ResourceId {
+        self.resource_details.id
+    }
+
+    /// Update the internal version cache until it's either the size of the provided `limit`, or there are no more versions.
+    #[inline]
+    async fn update_version_cache(&self, limit: u64) -> IoSessionResult<()> {
+        // cache is already bigger than the limit.
+        // we don't handle edge cases where versions are deleted between the previous cache update and this one.
+        if limit < self.versions.read().await.len() as u64 {
+            return Ok(());
+        }
+
+        let versions = self
+            .io
+            .spiget_api()
+            .resource_versions(self.resource_id(), limit)
+            .await?;
+
+        let mut cache = self.versions.write().await;
+
+        cache.clear();
+        cache.extend(versions.into_iter().map(|version| (version.id, version)));
+
+        Ok(())
+    }
+
+    /// Get the `limit` latest versions of this plugin.
+    ///
+    /// This caches the versions internally, so subsequent calls with the same or smaller `limit` will get the cached data.
+    #[inline]
+    pub async fn versions(&self, limit: u64) -> IoSessionResult<Vec<SpigetVersionJson>> {
+        self.update_version_cache(limit).await?;
+
+        Ok(self
+            .versions
+            .read()
+            .await
+            .values()
+            .take(limit as _)
+            .cloned()
+            .collect())
+    }
+
+    // TODO: docs
+    #[inline]
+    pub async fn latest_version(&self) -> IoSessionResult<Option<SpigetResourceVersion>> {
+        todo!()
     }
 }
