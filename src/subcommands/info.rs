@@ -2,14 +2,13 @@
 
 // TODO: allow this command to display info about a specific version too
 
-use chrono::DateTime;
 use clap::Args;
 use owo_colors::OwoColorize;
 
 use crate::{
     adapter::{
         spiget::{SpigetPlugin, SpigetResourceDetails},
-        PluginApiType, PluginDetails, PluginVersion,
+        PluginDetails, PluginVersion,
     },
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},

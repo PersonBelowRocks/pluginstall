@@ -1,19 +1,13 @@
 //! The 'download' subcommand for downloading a plugin in the manifest.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Args;
-use owo_colors::OwoColorize;
 
 use crate::{
-    adapter::{PluginApiType, PluginDetails, PluginVersion, VersionSpec},
-    cli::Subcommand,
-    manifest::{Manifest, PluginDownloadSpec},
-    output::DataDisplay,
+    adapter::VersionSpec, cli::Subcommand, manifest::Manifest, output::DataDisplay,
     session::IoSession,
 };
-
-use super::PluginNotFoundError;
 
 /// The 'download' subcommand.
 #[derive(Args, Debug, Clone)]

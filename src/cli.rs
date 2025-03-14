@@ -1,7 +1,6 @@
 //! CLI interface logic
 
 use crate::manifest::{Manifest, ManifestResult, DEFAULT_MANIFEST_FILE_NAME};
-use crate::output::{CliOutput, DataDisplay};
 use crate::session::IoSession;
 use crate::subcommands;
 use std::borrow::Cow;
@@ -47,7 +46,7 @@ macro_rules! run_subcommand {
     ($commands:expr, $variant:ident, $session:expr, $manifest:expr) => {
         if let Commands::$variant(cmd) = $commands {
             match cmd.run($session, $manifest).await {
-                Ok(output) => return ExitCode::SUCCESS,
+                Ok(()) => return ExitCode::SUCCESS,
                 Err(error) => {
                     // let std_err = AsRef::<dyn std::error::Error>::as_ref(&error);
                     log::error!("{}", error);

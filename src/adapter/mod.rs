@@ -63,9 +63,9 @@ pub trait PluginVersion {
 
         let mut map = serializer.serialize_map(Some(num_fields))?;
 
-        map.serialize_entry("version_identifier", self.version_identifier().as_ref());
-        map.serialize_entry("version_name", self.version_name().as_ref());
-        map.serialize_entry("download_url", self.download_url());
+        map.serialize_entry("version_identifier", self.version_identifier().as_ref())?;
+        map.serialize_entry("version_name", self.version_name().as_ref())?;
+        map.serialize_entry("download_url", self.download_url())?;
 
         publish_date.map(|datetime| map.serialize_entry("publish_date", &datetime));
 
@@ -137,9 +137,9 @@ pub trait PluginDetails {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(PLUGIN_DETAILS_SERIALIZED_FIELDS))?;
 
-        map.serialize_entry("manifest_name", self.manifest_name());
-        map.serialize_entry("page_url", self.page_url());
-        map.serialize_entry("plugin_type", &self.plugin_type());
+        map.serialize_entry("manifest_name", self.manifest_name())?;
+        map.serialize_entry("page_url", self.page_url())?;
+        map.serialize_entry("plugin_type", &self.plugin_type())?;
 
         map.end()
     }

@@ -1,18 +1,18 @@
 //! The 'versions' subcommand for listing versions of a plugin.
-use std::ops::Deref;
 
 use clap::Args;
+use owo_colors::AnsiColors;
 
 use crate::{
     adapter::{
         spiget::{SpigetPlugin, SpigetResourceDetails},
-        PluginApiType, PluginDetails, PluginVersion,
+        PluginDetails, PluginVersion,
     },
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
     session::IoSession,
-    util::{CliTable, CliTableFormatting},
+    util::{CliTable, CliTableRow},
 };
 
 use super::PluginNotFoundError;
@@ -78,61 +78,48 @@ impl<'a, P: PluginDetails, V: PluginVersion> DataDisplay for VersionsOutput<'a, 
     }
 
     fn write_hr(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
-        if self.cfg.write_download_urls {
-            // this table has 4 columns since the download URL is included
-            let mut table = CliTable::new([
-                "Version Name",
-                "Version Date",
-                "Version Identifier",
-                "Download URL",
-            ]);
-
-            for version in self.versions {
-                let datetime_str = version
-                    .publish_date()
-                    .map(|d| d.format(&self.cfg.strftime_format).to_string());
-
-                table.push([
-                    version.version_name().to_string(),
-                    datetime_str.as_deref().unwrap_or("---").to_string(),
-                    version.version_identifier().to_string(),
-                    version.download_url().to_string(),
-                ]);
-            }
-
-            table.write(
-                w,
-                &CliTableFormatting {
-                    write_headers: true,
-                    equal_field_width: true,
-                    ..Default::default()
-                },
-            )?;
+        let mut headers = if self.cfg.write_download_urls {
+            CliTableRow::new(&[
+                "Version Name".into(),
+                "Version Date".into(),
+                "Version Identifier".into(),
+                "Download URL".into(),
+            ])
         } else {
-            // this table only has 3 columns since the download URL is excluded
-            let mut table = CliTable::new(["Version Name", "Version Date", "Version Identifier"]);
+            CliTableRow::new(&[
+                "Version Name".into(),
+                "Version Date".into(),
+                "Version Identifier".into(),
+            ])
+        };
 
-            for version in self.versions {
-                let datetime_str = version
-                    .publish_date()
-                    .map(|d| d.format(&self.cfg.strftime_format).to_string());
+        headers.color_all(AnsiColors::Green);
 
-                table.push([
-                    version.version_name().to_string(),
-                    datetime_str.as_deref().unwrap_or("---").to_string(),
-                    version.version_identifier().to_string(),
-                ]);
+        let mut table = CliTable::new(headers);
+
+        for version in self.versions {
+            let datetime_str = version
+                .publish_date()
+                .map(|d| d.format(&self.cfg.strftime_format).to_string());
+
+            let mut row_cell_text = vec![
+                version.version_name().to_string(),
+                datetime_str.as_deref().unwrap_or("").to_string(),
+                version.version_identifier().to_string(),
+            ];
+
+            // include download URL if requested
+            if self.cfg.write_download_urls {
+                row_cell_text.push(version.download_url().to_string());
             }
 
-            table.write(
-                w,
-                &CliTableFormatting {
-                    write_headers: true,
-                    equal_field_width: true,
-                    ..Default::default()
-                },
-            )?;
+            let mut row = CliTableRow::new(&row_cell_text);
+            row[0].color = AnsiColors::Green;
+
+            table.add(row);
         }
+
+        writeln!(w, "{table}")?;
 
         Ok(())
     }

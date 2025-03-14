@@ -3,18 +3,12 @@
 use std::{io, sync::Arc};
 
 use crate::{
-    adapter::spiget::{ResourceId, SpigetApiClient, SpigetApiError, SpigetPlugin},
-    manifest::Manifest,
+    adapter::spiget::{SpigetApiClient, SpigetApiError},
     output::CliOutput,
 };
 
 /// The user agent to be used by pluginstall when talking to APIs.
 pub static USER_AGENT: &str = "pluginstall CLI app (github PersonBelowRocks/pluginstall)";
-
-/// The base URL for the Spiget API.
-pub static SPIGET_API_BASE_URL: &str = "https://api.spiget.org/v2/";
-/// The base URL for the Hangar API.
-pub static HANGAR_API_BASE_URL: &str = "https://hangar.papermc.io/api/v1/";
 
 /// Error emitted by [`IoSession`] operations.
 #[derive(thiserror::Error, Debug)]

@@ -3,16 +3,13 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use chrono::Utc;
-use indexmap::{map::Values, IndexMap};
 use rq::{Response, StatusCode, Url};
-use tokio::sync::{OnceCell, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
-use crate::session::{IoSession, IoSessionResult};
+use crate::session::IoSession;
 
 use super::{PluginApiType, PluginDetails, PluginVersion};
-
-pub static SPIGOT_WEBSITE_RESOURCE_PAGE: &str = "https://www.spigotmc.org/resources/{resource_id}";
 
 /// A Spiget plugin entry in the manifest.
 #[derive(serde::Deserialize, Clone, Debug)]

@@ -3,8 +3,8 @@ use hyperx::header::{ContentDisposition, DispositionParam};
 use log::LevelFilter;
 use owo_colors::{AnsiColors, OwoColorize};
 use std::{
-    array,
     cmp::max,
+    fmt,
     io::Write,
     path::{Path, PathBuf},
     str::FromStr,
@@ -118,159 +118,281 @@ pub fn validate_file_name(file_name_candidate: &Path) -> bool {
     true
 }
 
-/// A table that can be written to the terminal in a text representation.
-#[derive(Debug, Clone)]
-pub struct CliTable<const COLS: usize> {
-    column_names: [String; COLS],
-    rows: Vec<[String; COLS]>,
+/// A row in a [`CliTable`], holding a list of the cells in the row.
+///
+/// May be indexed to access the contained cells.
+#[derive(Debug, Clone, dm::Index, dm::IndexMut)]
+pub struct CliTableRow {
+    #[index]
+    #[index_mut]
+    cells: Vec<CliTableCell>,
+    /// The background that this row should have when being printed.
+    /// Set to [`None`] for no background color (i.e., the default background color).
+    pub bg_color: AnsiColors,
 }
 
-impl<const COLS: usize> CliTable<COLS> {
-    /// Create a new CLI table with the given column names.
+impl CliTableRow {
+    /// Create a new empty row with a given number of columns.
     #[inline]
-    pub fn new(column_names: [impl Into<String>; COLS]) -> Self {
+    #[must_use]
+    pub fn empty(columns: usize) -> Self {
         Self {
-            column_names: column_names.map(Into::<String>::into),
+            cells: vec![CliTableCell::default(); columns],
+            bg_color: AnsiColors::Default,
+        }
+    }
+
+    /// Create a new row with the provided text in the columns.
+    /// Cell colors will be the default colors.
+    #[inline]
+    #[must_use]
+    pub fn new(columns: &[String]) -> Self {
+        Self {
+            cells: columns
+                .iter()
+                .cloned()
+                .map(CliTableCell::new)
+                .collect::<Vec<_>>(),
+            bg_color: AnsiColors::Default,
+        }
+    }
+
+    /// Check if this row is empty.
+    /// A row is empty if:
+    /// - All contained cells have no text
+    /// - The row has the default background color
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(self.bg_color, AnsiColors::Default)
+            && self.cells.iter().all(|cell| cell.text.is_empty())
+    }
+
+    /// The number of columns in this row.
+    #[inline]
+    #[must_use]
+    pub fn columns(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Apply the given color to the text in all contained cells.
+    #[inline]
+    pub fn color_all(&mut self, color: AnsiColors) {
+        for cell in self.cells.iter_mut() {
+            cell.color = color
+        }
+    }
+
+    /// Write this table row to the formatter.
+    /// Columns will be padded until they reach their width as described in the `widths` slice.
+    ///
+    /// Will not write a newline at the end.
+    ///
+    /// # Panics
+    /// Will panic if the length of `width` is not the same as the number of columns in this row,
+    /// or if a cell in this row is wider than the width of its column in `widths`
+    #[inline]
+    pub fn write(&self, f: &mut fmt::Formatter, widths: &[usize]) -> fmt::Result {
+        assert_eq!(widths.len(), self.columns(), "Number of columns must match");
+
+        for i in 0..self.columns() {
+            let cell = &self[i];
+            let target_width = widths[i];
+
+            // the number of spaces to insert on the right of the field
+            let right_padding = target_width - cell.width();
+
+            // leftward cell border, also the rightward cell border of the leftward cell
+            write!(f, "{}", '|'.on_color(self.bg_color).dimmed())?;
+
+            // padding against the leftward cell border
+            write!(f, "{}", ' '.on_color(self.bg_color))?;
+
+            // writing the text
+            write!(
+                f,
+                "{}",
+                &cell.text.on_color(self.bg_color).color(cell.color)
+            )?;
+
+            // padding to fit the column width
+            write!(f, "{}", &" ".repeat(right_padding).on_color(self.bg_color))?;
+
+            // padding against the rightward cell border
+            write!(f, "{}", ' '.on_color(self.bg_color))?;
+        }
+
+        // rightmost cell border
+        write!(f, "{}", '|'.on_color(self.bg_color).dimmed())?;
+
+        Ok(())
+    }
+}
+
+/// A cell in a [`CliTable`].
+///
+/// Holds the text contents of the cell and the ANSI color that the text should be printed in.
+#[derive(Debug, Clone)]
+pub struct CliTableCell {
+    pub text: String,
+    pub color: AnsiColors,
+}
+
+impl Default for CliTableCell {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            color: AnsiColors::Default,
+        }
+    }
+}
+
+impl CliTableCell {
+    /// Create a new cell with the given text and default colors.
+    #[inline]
+    #[must_use]
+    pub fn new(text: String) -> Self {
+        Self {
+            text,
+            ..Default::default()
+        }
+    }
+
+    /// The width of the text in this cell.
+    #[inline]
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.text.len()
+    }
+}
+
+/// A table that can be written to the terminal in a text representation.
+#[derive(Debug, Clone)]
+pub struct CliTable {
+    /// The names of the columns in the row. Will be printed as a header or footer.
+    column_names: CliTableRow,
+    rows: Vec<CliTableRow>,
+}
+
+impl CliTable {
+    /// Create a new empty CLI table, using the given row as the column names.
+    /// The number of columns in the given row will be the number of columns in the table.
+    #[inline]
+    pub fn new(columns: CliTableRow) -> Self {
+        Self {
+            column_names: columns,
             rows: Vec::new(),
         }
     }
 
     /// The number of rows in this table.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn rows(&self) -> usize {
         self.rows.len()
     }
 
-    /// Push a row onto this table.
+    /// The number of columns in this table.
     #[inline]
-    pub fn push(&mut self, column: [impl Into<String>; COLS]) {
-        self.rows.push(column.map(Into::<String>::into));
+    pub fn columns(&self) -> usize {
+        self.column_names.columns()
     }
 
+    /// Push a row onto this table. Returns the index of the added row.
+    ///
+    /// # Panics
+    /// Will panic if the row has a different number of columns than the table.
     #[inline]
-    pub fn write(
-        &self,
-        w: &mut impl std::io::Write,
-        formatting: &CliTableFormatting<COLS>,
-    ) -> std::io::Result<()> {
-        // we make a copy of ourselves up here so we can do formatting on the copy
-        let mut writable_table = self.clone();
+    pub fn add(&mut self, row: CliTableRow) -> usize {
+        assert_eq!(
+            row.columns(),
+            self.columns(),
+            "Row must have the same number of columns as the table"
+        );
 
-        if formatting.equal_field_width {
-            // Find the maximum width of each column. Fields will be padded until they are equal to the maximum width.
-            let max_column_widths = {
-                // start with the width of the headers if we're supposed to write the headers.
-                // we don't want to pad to the width of a header unless the header is actually there, otherwise we
-                // risk wasting space.
-                let mut cols: [usize; COLS] = if formatting.write_headers {
-                    array::from_fn(|i| writable_table.column_names[i].len())
-                } else {
-                    [0; COLS]
-                };
+        self.rows.push(row);
 
-                for row in &writable_table.rows {
-                    for i in 0..COLS {
-                        let field_width = row[i].len();
-                        cols[i] = max(cols[i], field_width)
-                    }
-                }
+        self.rows() - 1
+    }
 
-                cols
-            };
+    /// Remove a row with the given index from this table, returning it.
+    /// This shifts the remaining rows "upwards" so that the order is preserved.
+    ///
+    /// Returns [`None`] if no row with the index existed.
+    #[inline]
+    pub fn remove(&mut self, row_index: usize) -> Option<CliTableRow> {
+        if self.rows() <= row_index {
+            None
+        } else {
+            Some(self.rows.remove(row_index))
+        }
+    }
 
-            // do the actual padding
-            for row in &mut writable_table.rows {
-                for i in 0..COLS {
-                    let field = &mut row[i];
-                    let target_width = max_column_widths[i];
+    /// Find the maximum width of each column in this table.
+    /// A column's max width can be used to calculate how much padding is needed for a cell's text.
+    ///
+    /// This operation is somewhat costly, so the result should be cached and invalidated whenever the table updates.
+    #[inline]
+    #[must_use]
+    pub fn calculate_max_widths(&self) -> Vec<usize> {
+        let mut cols = vec![0usize; self.columns()];
 
-                    // the number of spaces to insert on the right of the field
-                    let right_padding = target_width - field.len();
+        for i in 0..self.columns() {
+            cols[i] = self.column_names[i].width()
+        }
 
-                    field.push_str(&" ".repeat(right_padding));
-                }
-            }
-
-            // pad the headers as needed
-            for (i, header) in writable_table.column_names.iter_mut().enumerate() {
-                let target_width = max_column_widths[i];
-
-                // the number of spaces to insert on the right of the field
-                let right_padding = target_width - header.len();
-
-                header.push_str(&" ".repeat(right_padding));
+        for row in self.iter() {
+            for i in 0..self.columns() {
+                cols[i] = max(cols[i], row[i].width())
             }
         }
 
-        if formatting.write_headers {
-            // the total width of the table.
-            // we start at the width of all the borders and the border padding.
-            let mut total_width = (COLS * 3) + 1;
+        cols
+    }
 
-            // the left-most border
-            write!(w, "|")?;
-            for (i, column_name) in writable_table.column_names.iter().enumerate() {
-                total_width += column_name.len();
+    /// Iterate over the rows in this table, in order of insertion.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &CliTableRow> + use<'_> {
+        self.rows.iter()
+    }
+}
 
-                // this space separates the border to the LEFT of this field from the field value itself
-                write!(w, " ")?;
-                match formatting.column_header_colors {
-                    Some(colors) => {
-                        let color = colors[i];
-                        write!(w, "{}", column_name.color(color))?;
-                    }
-                    None => {
-                        write!(w, "{column_name}")?;
-                    }
-                }
-                // this space separates the border to the RIGHT of this field from the field value itself
-                write!(w, " ")?;
-                // the field's right border. will also be the right-most border if this is the last field
-                write!(w, "|")?;
-            }
+/// Calculate the width of a table's borders and their padding.
+#[inline]
+fn calculate_border_widths(columns: usize) -> usize {
+    (columns * 3) + 1
+}
 
-            writeln!(w)?;
-            // a separating line
-            writeln!(w, "{}", "-".repeat(total_width))?;
+impl fmt::Display for CliTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // we should handle the case where the table is completely empty
+        if self.columns() == 0 {
+            todo!()
         }
 
-        for row in &writable_table.rows {
-            // the left-most border
-            write!(w, "|")?;
-            for (i, field) in row.iter().enumerate() {
-                // this space separates the border to the LEFT of this field from the field value itself
-                write!(w, " ")?;
-                match formatting.column_colors {
-                    Some(colors) => {
-                        let color = colors[i];
-                        write!(w, "{}", field.color(color))?;
-                    }
-                    None => {
-                        write!(w, "{field}")?;
-                    }
-                }
-                // this space separates the border to the RIGHT of this field from the field value itself
-                write!(w, " ")?;
-                // the field's right border. will also be the right-most border if this is the last field
-                write!(w, "|")?;
-            }
+        // Find the maximum width of each column. Fields will be padded until they are equal to the maximum width.
+        let max_column_widths = self.calculate_max_widths();
 
-            writeln!(w)?;
+        // the total width the table takes up
+        let total_table_width =
+            max_column_widths.iter().sum::<usize>() + calculate_border_widths(self.columns());
+
+        // write the column headers if they're not empty
+        if !self.column_names.is_empty() {
+            self.column_names.write(f, &max_column_widths)?;
+            // newline after the headers
+            writeln!(f)?;
+            // a horizontal separator underneath the headers
+            write!(f, "{}", "-".repeat(total_table_width).dimmed())?;
+        }
+
+        // write the table contents with appropriate padding
+        for row in self.iter() {
+            // new line for a new row
+            writeln!(f)?;
+
+            row.write(f, &max_column_widths)?;
         }
 
         Ok(())
     }
-}
-
-/// Describes how a [`CliTable`] should be formatted when being converted to text.
-#[derive(Clone, Debug, Default)]
-pub struct CliTableFormatting<const COLS: usize> {
-    /// Whether all fields in a column should be padded to the same width.
-    pub equal_field_width: bool,
-    /// The colors of the column fields.
-    pub column_colors: Option<[AnsiColors; COLS]>,
-    /// Whether the column headers should be written.
-    pub write_headers: bool,
-    /// The color of the column headers. Doesn't do anything unless `write_headers` is true.
-    pub column_header_colors: Option<[AnsiColors; COLS]>,
 }
