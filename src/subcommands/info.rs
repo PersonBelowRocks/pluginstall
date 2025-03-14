@@ -2,11 +2,15 @@
 
 // TODO: allow this command to display info about a specific version too
 
+use chrono::DateTime;
 use clap::Args;
 use owo_colors::OwoColorize;
 
 use crate::{
-    adapter::{spiget::SpigetPlugin, PluginApiType, PluginDetails},
+    adapter::{
+        spiget::{SpigetPlugin, SpigetResourceDetails},
+        PluginApiType, PluginDetails, PluginVersion,
+    },
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
@@ -27,12 +31,14 @@ pub struct Info {
 
 /// The output of the 'info' subcommand.
 #[derive(Debug, serde::Serialize)]
-pub struct InfoOutput<P: PluginDetails> {
+pub struct InfoOutput<P: PluginDetails, V: PluginVersion> {
     #[serde(serialize_with = "crate::adapter::PluginDetails::serialize")]
     pub details: P,
+    #[serde(serialize_with = "crate::adapter::PluginVersion::serialize")]
+    pub latest_version: V,
 }
 
-impl<P: PluginDetails> DataDisplay for InfoOutput<P> {
+impl<P: PluginDetails, V: PluginVersion> DataDisplay for InfoOutput<P, V> {
     fn write_json(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
         let json_string = serde_json::to_string(self).unwrap();
         write!(w, "{json_string}")
@@ -45,6 +51,19 @@ impl<P: PluginDetails> DataDisplay for InfoOutput<P> {
             self.details.plugin_type(),
             self.details.manifest_name().bright_green(),
             self.details.page_url().bright_green(),
+        )?;
+
+        writeln!(
+            w,
+            "Latest version '{0}' (ID {1}) was published {2}",
+            self.latest_version.version_name().bright_green(),
+            self.latest_version.version_identifier().bright_green(),
+            self.latest_version
+                .publish_date()
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or("---".into())
+                .bright_green(),
         )
     }
 }
@@ -59,23 +78,19 @@ impl Subcommand for Info {
 
         match plugin_manifest {
             PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
-                let spiget_plugin_details = session
-                    .spiget_api()
-                    .resource_details(spiget_plugin_manifest.resource_id)
-                    .await?;
-
                 let spiget_plugin =
                     SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
 
-                let details = PluginDetails {
-                    manifest_name: manifest_name.clone(),
-                    page_url: spiget_plugin.plugin_page(),
-                    plugin_type: PluginApiType::Spiget,
+                let out = InfoOutput {
+                    details: SpigetResourceDetails::new(spiget_plugin.resource_id(), manifest_name),
+                    latest_version: spiget_plugin.latest_version().await?,
                 };
 
-                Ok(InfoOutput { details })
+                session.cli_output().display(&out)?;
             }
             _ => todo!(),
         }
+
+        Ok(())
     }
 }

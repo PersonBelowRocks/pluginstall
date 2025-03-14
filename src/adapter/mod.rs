@@ -4,8 +4,9 @@
 use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
+use ref_cast::RefCast;
 use rq::Url;
-use serde::ser::SerializeMap;
+use serde::ser::{SerializeMap, SerializeSeq};
 
 pub mod hangar;
 pub mod jenkins;
@@ -70,7 +71,44 @@ pub trait PluginVersion {
 
         map.end()
     }
+
+    /// Serialize a slice of plugin versions.
+    /// Meant to be used with the serde field tag `#[serde(serialize_with = ...)]`.
+    ///
+    /// Implementors of this trait should use the default implementation of this method,
+    /// unless there's a really good reason to write a custom implementation.
+    #[inline]
+    fn serialize_slice<S>(versions: &impl AsRef<[Self]>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        Self: Sized,
+        S: serde::Serializer,
+    {
+        let versions = versions.as_ref();
+        let mut seq = serializer.serialize_seq(Some(versions.len()))?;
+
+        for version in versions {
+            seq.serialize_element(PluginVersionWrapper::ref_cast(version))?;
+        }
+
+        seq.end()
+    }
 }
+
+/// Wrapper around a [`PluginVersion`] that implements [`serde::Serialize`].
+#[derive(serde::Serialize, RefCast)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct PluginVersionWrapper<V: PluginVersion>(
+    #[serde(serialize_with = "PluginVersion::serialize")] pub V,
+);
+
+/// Wrapper around a [`PluginDetails`] that implements [`serde::Serialize`].
+#[derive(serde::Serialize, RefCast)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct PluginDetailsWrapper<P: PluginDetails>(
+    #[serde(serialize_with = "PluginDetails::serialize")] pub P,
+);
 
 /// The number of fields in a serialized [`PluginDetails`].
 const PLUGIN_DETAILS_SERIALIZED_FIELDS: usize = 3;

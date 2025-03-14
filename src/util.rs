@@ -15,11 +15,11 @@ pub const LOG_LEVEL_COLORS: [AnsiColors; 5] = [
     AnsiColors::Yellow,
     AnsiColors::BrightBlue,
     AnsiColors::Green,
-    AnsiColors::Default,
+    AnsiColors::Cyan,
 ];
 
 #[cfg(debug_assertions)]
-pub const LOG_LEVEL: LevelFilter = LevelFilter::Debug;
+pub const LOG_LEVEL: LevelFilter = LevelFilter::Trace;
 #[cfg(not(debug_assertions))]
 pub const LOG_LEVEL: LevelFilter = LevelFilter::Info;
 

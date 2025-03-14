@@ -1,8 +1,13 @@
 //! The 'versions' subcommand for listing versions of a plugin.
+use std::ops::Deref;
+
 use clap::Args;
 
 use crate::{
-    adapter::{spiget::SpigetPlugin, PluginApiType, PluginDetails, PluginVersion},
+    adapter::{
+        spiget::{SpigetPlugin, SpigetResourceDetails},
+        PluginApiType, PluginDetails, PluginVersion,
+    },
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
@@ -47,12 +52,14 @@ pub struct Versions {
 
 /// The output of the list command. Written to stdout with [`DataDisplay`].
 #[derive(Debug, serde::Serialize)]
-pub struct VersionsOutput {
+pub struct VersionsOutput<'a, P: PluginDetails, V: PluginVersion> {
     /// The format that datetimes should be written as when writing in human-readable mode.
     #[serde(skip)]
     pub cfg: VersionsOutputCfg,
-    pub details: PluginDetails,
-    pub versions: Vec<PluginVersion>,
+    #[serde(serialize_with = "crate::adapter::PluginDetails::serialize")]
+    pub details: P,
+    #[serde(serialize_with = "crate::adapter::PluginVersion::serialize_slice")]
+    pub versions: &'a [V],
 }
 
 /// Options for how data should be formatted to the terminal.
@@ -64,7 +71,7 @@ pub struct VersionsOutputCfg {
     pub write_download_urls: bool,
 }
 
-impl DataDisplay for VersionsOutput {
+impl<'a, P: PluginDetails, V: PluginVersion> DataDisplay for VersionsOutput<'a, P, V> {
     fn write_json(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
         let json_string = serde_json::to_string(self).unwrap();
         write!(w, "{json_string}")
@@ -80,16 +87,16 @@ impl DataDisplay for VersionsOutput {
                 "Download URL",
             ]);
 
-            for version in &self.versions {
+            for version in self.versions {
                 let datetime_str = version
-                    .publish_date
+                    .publish_date()
                     .map(|d| d.format(&self.cfg.strftime_format).to_string());
 
                 table.push([
-                    version.version_name.to_string(),
+                    version.version_name().to_string(),
                     datetime_str.as_deref().unwrap_or("---").to_string(),
-                    version.version_identifier.to_string(),
-                    version.download_url.to_string(),
+                    version.version_identifier().to_string(),
+                    version.download_url().to_string(),
                 ]);
             }
 
@@ -105,15 +112,15 @@ impl DataDisplay for VersionsOutput {
             // this table only has 3 columns since the download URL is excluded
             let mut table = CliTable::new(["Version Name", "Version Date", "Version Identifier"]);
 
-            for version in &self.versions {
+            for version in self.versions {
                 let datetime_str = version
-                    .publish_date
+                    .publish_date()
                     .map(|d| d.format(&self.cfg.strftime_format).to_string());
 
                 table.push([
-                    version.version_name.to_string(),
+                    version.version_name().to_string(),
                     datetime_str.as_deref().unwrap_or("---").to_string(),
-                    version.version_identifier.to_string(),
+                    version.version_identifier().to_string(),
                 ]);
             }
 
@@ -132,46 +139,37 @@ impl DataDisplay for VersionsOutput {
 }
 
 impl Subcommand for Versions {
-    type Output = VersionsOutput;
-
     /// Run the versions command.
     #[inline]
-    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<Self::Output> {
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<()> {
         let manifest_name = &self.plugin_name;
 
         let Some(plugin_manifest) = manifest.plugin.get(manifest_name) else {
             return Err(PluginNotFoundError(self.plugin_name.clone()).into());
         };
 
-        let out = match plugin_manifest {
+        match plugin_manifest {
             PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
-                let mut spiget_plugin =
+                let spiget_plugin =
                     SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
-                spiget_plugin
-                    .get_versions(session, Some(self.limit))
-                    .await?;
 
-                // will be in order of date published, with the latest first.
-                let versions = spiget_plugin.general_versions().collect::<Vec<_>>();
-                let details = PluginDetails {
-                    manifest_name: manifest_name.clone(),
-                    page_url: spiget_plugin.plugin_page(),
-                    plugin_type: PluginApiType::Spiget,
-                };
+                let versions = spiget_plugin.versions(self.limit).await?;
 
-                VersionsOutput {
+                let output = VersionsOutput {
                     cfg: VersionsOutputCfg {
                         strftime_format: self.time_format.clone(),
                         write_download_urls: self.download_url,
                     },
-                    details,
-                    versions,
-                }
+                    details: SpigetResourceDetails::new(spiget_plugin.resource_id(), manifest_name),
+                    versions: &*versions,
+                };
+
+                session.cli_output().display(&output)?;
             }
 
             _ => todo!(),
         };
 
-        Ok(out)
+        Ok(())
     }
 }

@@ -4,6 +4,7 @@ use std::{io, sync::Arc};
 
 use crate::{
     adapter::spiget::{ResourceId, SpigetApiClient, SpigetApiError, SpigetPlugin},
+    manifest::Manifest,
     output::CliOutput,
 };
 
@@ -45,6 +46,7 @@ impl IoSession {
     pub fn new(cli_output: CliOutput) -> Self {
         let client = rq::Client::builder()
             .user_agent(USER_AGENT)
+            .connection_verbose(true)
             .build()
             .unwrap();
 

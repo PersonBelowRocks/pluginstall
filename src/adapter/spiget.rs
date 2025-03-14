@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::session::{IoSession, IoSessionResult};
 
-use super::PluginVersion;
+use super::{PluginApiType, PluginDetails, PluginVersion};
 
 pub static SPIGOT_WEBSITE_RESOURCE_PAGE: &str = "https://www.spigotmc.org/resources/{resource_id}";
 
@@ -174,6 +174,46 @@ impl PluginVersion for SpigetResourceVersion {
     }
 }
 
+/// Details of a Spiget resource.
+/// This type implements [`PluginDetails`] and is meant to be used to pass
+/// resource/plugin information to consumers who operate on generalized plugins.
+#[derive(Clone, Debug)]
+pub struct SpigetResourceDetails {
+    pub manifest_name: String,
+    pub page_url: Url,
+}
+
+impl SpigetResourceDetails {
+    /// Construct a new [`SpigetResourceDetails`] from a Spiget resource's ID, and the manifest
+    /// name of that plugin. Will compute the page URL based on the resource ID.
+    ///
+    /// # Warning
+    /// Nothing guarantees that the computed page URL will point to a valid resource.
+    /// Make sure that there actually exists a resource with the given resource ID before calling this.
+    #[inline]
+    pub fn new(resource_id: ResourceId, manifest_name: &str) -> Self {
+        Self {
+            manifest_name: manifest_name.to_string(),
+            page_url: Url::parse(&format!("https://www.spigotmc.org/resources/{resource_id}"))
+                .unwrap(),
+        }
+    }
+}
+
+impl PluginDetails for SpigetResourceDetails {
+    fn manifest_name(&self) -> &str {
+        &self.manifest_name
+    }
+
+    fn page_url(&self) -> &Url {
+        &self.page_url
+    }
+
+    fn plugin_type(&self) -> PluginApiType {
+        PluginApiType::Spiget
+    }
+}
+
 /// The base URL for the Spiget API.
 pub(crate) static BASE_URL: &str = "https://api.spiget.org/v2/";
 
@@ -221,7 +261,7 @@ impl SpigetApiClient {
     #[inline]
     pub fn compute_download_url(&self, resource_id: ResourceId, version_id: VersionId) -> Url {
         self.endpoint_url(&format!(
-            "/resources/{resource_id}/versions/{version_id}/download/proxy"
+            "resources/{resource_id}/versions/{version_id}/download/proxy"
         ))
         .unwrap()
     }
@@ -246,7 +286,7 @@ impl SpigetApiClient {
         resource_id: ResourceId,
     ) -> SpigetApiResult<SpigetResourceJson> {
         let url = self
-            .endpoint_url(&format!("/resources/{resource_id}"))
+            .endpoint_url(&format!("resources/{resource_id}"))
             .unwrap();
 
         let response = self.client.get(url).send().await?;
@@ -275,7 +315,7 @@ impl SpigetApiClient {
         size: u64,
     ) -> SpigetApiResult<Vec<SpigetVersionJson>> {
         let mut url = self
-            .endpoint_url(&format!("/resources/{resource_id}/versions"))
+            .endpoint_url(&format!("resources/{resource_id}/versions"))
             .unwrap();
         url.set_query(Some(&format!("size={size}&sort=-releaseDate")));
 
@@ -299,7 +339,7 @@ impl SpigetApiClient {
         version_id: VersionId,
     ) -> SpigetApiResult<SpigetVersionJson> {
         let url = self
-            .endpoint_url(&format!("/resources/{resource_id}/versions/{version_id}"))
+            .endpoint_url(&format!("resources/{resource_id}/versions/{version_id}"))
             .unwrap();
 
         let response = self.client.get(url).send().await?;
@@ -320,7 +360,7 @@ impl SpigetApiClient {
         resource_id: ResourceId,
     ) -> SpigetApiResult<SpigetVersionJson> {
         let url = self
-            .endpoint_url(&format!("/resources/{resource_id}/versions/latest"))
+            .endpoint_url(&format!("resources/{resource_id}/versions/latest"))
             .unwrap();
 
         let response = self.client.get(url).send().await?;
@@ -377,7 +417,7 @@ pub struct SpigetPlugin {
     io: IoSession,
     resource_details: SpigetResourceJson,
     /// Cached list of versions sorted from latest to oldest.
-    cached_latest_versions: Arc<RwLock<Vec<SpigetVersionJson>>>,
+    cached_latest_versions: Arc<RwLock<Vec<SpigetResourceVersion>>>,
     /// Cached version details.
     cached_versions: Arc<RwLock<HashMap<VersionId, SpigetVersionJson>>>,
 }
@@ -408,7 +448,7 @@ impl SpigetPlugin {
 
     /// Update the internal version cache until it's either the size of the provided `limit`, or there are no more versions.
     #[inline]
-    async fn update_version_cache(&self, limit: u64) -> SpigetApiResult<()> {
+    async fn update_latest_version_cache(&self, limit: u64) -> SpigetApiResult<()> {
         // cache is already bigger than the limit.
         // we don't handle edge cases where versions are deleted between the previous cache update and this one.
         if limit < self.cached_latest_versions.read().await.len() as u64 {
@@ -424,7 +464,16 @@ impl SpigetPlugin {
         let mut cache = self.cached_latest_versions.write().await;
 
         cache.clear();
-        cache.extend(versions);
+        cache.extend(versions.into_iter().map(|version| {
+            SpigetResourceVersion {
+                resource_id: self.resource_id(),
+                download_url: self
+                    .io
+                    .spiget_api()
+                    .compute_download_url(self.resource_id(), version.id),
+                version,
+            }
+        }));
 
         Ok(())
     }
@@ -451,8 +500,8 @@ impl SpigetPlugin {
     pub async fn versions(
         &self,
         limit: u64,
-    ) -> SpigetApiResult<RwLockReadGuard<'_, [SpigetVersionJson]>> {
-        self.update_version_cache(limit).await?;
+    ) -> SpigetApiResult<RwLockReadGuard<'_, [SpigetResourceVersion]>> {
+        self.update_latest_version_cache(limit).await?;
 
         let limit = limit as usize;
         let guarded_slice =
@@ -478,8 +527,8 @@ impl SpigetPlugin {
             download_url: self
                 .io
                 .spiget_api()
-                .compute_download_url(resource_id, latest_version.id),
-            version: latest_version,
+                .compute_download_url(resource_id, latest_version.version.id),
+            version: latest_version.version,
             resource_id,
         })
     }
