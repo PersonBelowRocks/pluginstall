@@ -396,3 +396,15 @@ impl fmt::Display for CliTable {
         Ok(())
     }
 }
+
+/// Return early with an `Ok(None)` if the result of the given expression is [`None`].
+/// Otherwise return the value contained in [`Some`].
+#[macro_export]
+macro_rules! ok_none {
+    ($e:expr) => {
+        match $e {
+            std::option::Option::Some(out) => out,
+            std::option::Option::None => return Ok(None),
+        }
+    };
+}

@@ -7,9 +7,11 @@ edition = "2021"
 anyhow = "1.0.93"
 chrono = { version = "0.4.40", features = ["serde"] }
 clap = { version = "4.5.21", features = ["derive"] }
+derive-new = "0.7.0"
 derive_more = { version = "2.0.1", features = ["full"] }
 env_logger = { version = "0.11.5", features = ["color"] }
 futures = "0.3.31"
+homedir = "0.3.4"
 hyperx = { path = "./hyperx", features = ["compat", "headers"] }
 indexmap = "2.8.0"
 log = "0.4.22"
