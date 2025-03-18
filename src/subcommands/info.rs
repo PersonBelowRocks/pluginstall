@@ -2,13 +2,15 @@
 
 // TODO: allow this command to display info about a specific version too
 
+use std::str::FromStr;
+
 use clap::Args;
 use owo_colors::OwoColorize;
 
 use crate::{
     adapter::{
-        spiget::{SpigetPlugin, SpigetResourceDetails},
-        PluginDetails, PluginVersion,
+        spiget::{SpigetPlugin, SpigetResourceDetails, VersionId},
+        PluginDetails, PluginVersion, VersionSpec,
     },
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},
@@ -16,7 +18,7 @@ use crate::{
     session::IoSession,
 };
 
-use super::PluginNotFoundError;
+use super::{PluginNotFoundError, VersionSpecArgs};
 
 /// The 'info' subcommand.
 #[derive(Args, Debug, Clone)]
@@ -26,6 +28,8 @@ pub struct Info {
         help = "The name of the plugin in the manifest file."
     )]
     pub plugin_name: String,
+    #[command(flatten)]
+    pub version_spec: VersionSpecArgs,
 }
 
 /// The output of the 'info' subcommand.
@@ -34,7 +38,9 @@ pub struct InfoOutput<P: PluginDetails, V: PluginVersion> {
     #[serde(serialize_with = "crate::adapter::PluginDetails::serialize")]
     pub details: P,
     #[serde(serialize_with = "crate::adapter::PluginVersion::serialize")]
-    pub latest_version: V,
+    pub version: V,
+    /// Whether the version in the output is the latest version or not.
+    pub latest: bool,
 }
 
 impl<P: PluginDetails, V: PluginVersion> DataDisplay for InfoOutput<P, V> {
@@ -54,10 +60,10 @@ impl<P: PluginDetails, V: PluginVersion> DataDisplay for InfoOutput<P, V> {
 
         writeln!(
             w,
-            "Latest version '{0}' (ID {1}) was published {2}",
-            self.latest_version.version_name().bright_green(),
-            self.latest_version.version_identifier().bright_green(),
-            self.latest_version
+            "Version '{0}' (ID {1}) was published {2}",
+            self.version.version_name().bright_green(),
+            self.version.version_identifier().bright_green(),
+            self.version
                 .publish_date()
                 .as_ref()
                 .map(ToString::to_string)
@@ -75,14 +81,30 @@ impl Subcommand for Info {
             return Err(PluginNotFoundError(self.plugin_name.clone()).into());
         };
 
+        let version_spec = self.version_spec.get_version_spec();
+
         match plugin_manifest {
             PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
                 let spiget_plugin =
                     SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
 
+                let mut latest = false;
+                let version = match version_spec {
+                    VersionSpec::Name(name) => spiget_plugin.search_version(&name).await?,
+                    VersionSpec::Identifier(ident) => {
+                        let version_id = VersionId::from_str(&ident)?;
+                        spiget_plugin.version(version_id).await?
+                    }
+                    VersionSpec::Latest => {
+                        latest = true;
+                        spiget_plugin.latest_version().await?
+                    }
+                };
+
                 let out = InfoOutput {
                     details: SpigetResourceDetails::new(spiget_plugin.resource_id(), manifest_name),
-                    latest_version: spiget_plugin.latest_version().await?,
+                    version,
+                    latest,
                 };
 
                 session.cli_output().display(&out)?;

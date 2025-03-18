@@ -4,10 +4,7 @@ extern crate reqwest as rq;
 use std::process::ExitCode;
 
 use crate::cli::Cli;
-use crate::manifest::Manifest;
 use clap::Parser;
-use log::*;
-use output::CliOutput;
 use session::IoSession;
 
 mod adapter;
@@ -35,15 +32,15 @@ fn main() -> ExitCode {
 async fn async_main() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
 
-    debug!("CLI args = {cli:#?}");
+    log::debug!("CLI args = {cli:#?}");
 
-    let manifest_path = cli.get_manifest_path()?;
-    let manifest = Manifest::parse_from_file(manifest_path.as_ref()).await?;
+    let manifest = cli.manifest().await?;
 
-    debug!("manifest = {manifest:#?}");
+    log::debug!("manifest = {manifest:#?}");
 
-    let cli_output = CliOutput::new(cli.json, !cli.no_newline);
-    let session = IoSession::new(cli_output);
+    let cli_output = cli.cli_output();
+    let download_cache = cli.download_cache(&manifest.meta.manifest_name).await?;
+    let session = IoSession::new(cli_output, download_cache);
 
     let exit_code = cli.command.run(&session, &manifest).await;
 

@@ -2,8 +2,12 @@
 
 use std::{io, sync::Arc};
 
+use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
+use reqwest_middleware::ClientWithMiddleware;
+
 use crate::{
     adapter::spiget::{SpigetApiClient, SpigetApiError},
+    caching::DownloadCache,
     output::CliOutput,
 };
 
@@ -30,23 +34,33 @@ pub type IoSessionResult<T> = Result<T, IoSessionError>;
 /// A session for IO operations. Functions as a bridge between both HTTP APIs and the local filesystem (including local filesystem caches).
 #[derive(Clone)]
 pub struct IoSession {
-    client: rq::Client,
+    client: ClientWithMiddleware,
     spiget: SpigetApiClient,
     cli_output: Arc<CliOutput>,
+    cache: Arc<DownloadCache>,
 }
 
 impl IoSession {
     /// Creates a new API session.
-    pub fn new(cli_output: CliOutput) -> Self {
+    pub fn new(cli_output: CliOutput, download_cache: DownloadCache) -> Self {
         let client = rq::Client::builder()
             .user_agent(USER_AGENT)
             .connection_verbose(true)
             .build()
             .unwrap();
 
+        let client = reqwest_middleware::ClientBuilder::new(client)
+            .with(Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: download_cache.cacache_manager(),
+                options: HttpCacheOptions::default(),
+            }))
+            .build();
+
         Self {
             spiget: SpigetApiClient::new(&client),
             cli_output: Arc::new(cli_output),
+            cache: Arc::new(download_cache),
             client,
         }
     }
@@ -61,5 +75,11 @@ impl IoSession {
     #[inline]
     pub fn cli_output(&self) -> &CliOutput {
         &self.cli_output
+    }
+
+    /// Get the download cache.
+    #[inline]
+    pub fn download_cache(&self) -> &DownloadCache {
+        &self.cache
     }
 }

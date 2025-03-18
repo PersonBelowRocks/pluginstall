@@ -25,7 +25,7 @@ pub struct Manifest {
 pub struct ManifestMeta {
     /// A human-friendly name for this manifest.
     #[serde(rename = "name")]
-    manifest_name: String,
+    pub manifest_name: String,
 }
 
 /// An enum of various different supported download methods for the plugin.

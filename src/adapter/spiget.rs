@@ -1,8 +1,20 @@
 //! Logic for plugins downloaded from spiget.
 
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{
+    borrow::Cow,
+    cmp::min,
+    collections::HashMap,
+    num::ParseIntError,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    task::{self, Poll},
+};
 
 use chrono::Utc;
+use derive_new::new;
+use futures::{task::FutureObj, FutureExt, Stream, StreamExt, TryStream};
+use reqwest_middleware::ClientWithMiddleware;
 use rq::{Response, StatusCode, Url};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use uuid::Uuid;
@@ -42,6 +54,15 @@ impl ResourceId {
     }
 }
 
+impl FromStr for ResourceId {
+    type Err = ParseIntError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        u64::from_str(s).map(Self)
+    }
+}
+
 /// A version ID for a Spigot resource. Version IDs are tied to a specific resource (i.e., versions of that resource).
 #[derive(
     Copy,
@@ -58,6 +79,15 @@ impl ResourceId {
 )]
 #[display("{}", _0)]
 pub struct VersionId(u64);
+
+impl FromStr for VersionId {
+    type Err = ParseIntError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        u64::from_str(s).map(Self)
+    }
+}
 
 /// Represents an error from an operation on a [`SpigetPlugin`] type.
 #[derive(thiserror::Error, Debug)]
@@ -140,7 +170,7 @@ pub struct SpigetRatingJson {
 /// A client for communicating with the Spiget API.
 #[derive(Clone, Debug)]
 pub struct SpigetApiClient {
-    client: rq::Client,
+    client: ClientWithMiddleware,
     spiget_base_url: Url,
 }
 
@@ -217,8 +247,11 @@ pub(crate) static BASE_URL: &str = "https://api.spiget.org/v2/";
 /// An error with the Spiget API.
 #[derive(thiserror::Error, Debug)]
 pub enum SpigetApiError {
-    /// An underlying error from Reqwest.
-    #[error("Reqwest error: {0}")]
+    /// An underlying error from reqwest-middleware.
+    #[error("reqwest-middleware error: {0}")]
+    ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
+    /// An underlying error from reqwest.
+    #[error("reqwest error: {0}")]
     ReqwestError(#[from] rq::Error),
     /// An error with parsing a JSON response.
     #[error("JSON error: {0}")]
@@ -234,12 +267,14 @@ pub enum SpigetApiError {
 /// A type alias to clean up function signatures a bit.
 pub type SpigetApiResult<T> = Result<T, SpigetApiError>;
 
+// TODO: get all versions of the plugin immediately instead of getting them lazily as they are requested.
+//  this will be more cache-friendly and much, much, much simpler
 #[allow(dead_code)]
 impl SpigetApiClient {
     /// Create a new API client, wrapping the given [`reqwest::Client`].
     #[inline]
     #[must_use]
-    pub fn new(client: &rq::Client) -> Self {
+    pub fn new(client: &ClientWithMiddleware) -> Self {
         Self {
             client: client.clone(),
             spiget_base_url: Url::parse(BASE_URL).unwrap(),
@@ -314,7 +349,9 @@ impl SpigetApiClient {
         let mut url = self
             .endpoint_url(&format!("resources/{resource_id}/versions"))
             .unwrap();
-        url.set_query(Some(&format!("size={size}&sort=-releaseDate")));
+        url.set_query(Some(&format!(
+            "size={size}&sort=-releaseDate&fields=id,name,releaseDate"
+        )));
 
         let response = self.client.get(url).send().await?;
 
@@ -494,17 +531,22 @@ impl SpigetPlugin {
     ///
     /// This caches the versions internally, so subsequent calls with the same or smaller `limit` will get the cached data.
     #[inline]
-    pub async fn versions(
-        &self,
-        limit: u64,
-    ) -> SpigetApiResult<RwLockReadGuard<'_, [SpigetResourceVersion]>> {
+    pub async fn versions(&self, limit: u64) -> SpigetApiResult<VersionsOutput<'_>> {
         self.update_latest_version_cache(limit).await?;
 
         let limit = limit as usize;
-        let guarded_slice =
-            RwLockReadGuard::map(self.cached_latest_versions.read().await, |g| &g[..limit]);
+        let guarded_slice = RwLockReadGuard::map(self.cached_latest_versions.read().await, |g| {
+            // ensure we're not indexing out of bounds
+            let limit = min(g.len() - 1, limit);
+            &g[..limit]
+        });
 
         Ok(guarded_slice)
+    }
+
+    #[inline]
+    pub fn version_stream(&self) -> SpigetVersionStream<'_> {
+        SpigetVersionStream::new(self)
     }
 
     /// Get the latest version of this plugin.
@@ -512,12 +554,15 @@ impl SpigetPlugin {
     /// Returns [`SpigetApiError::NotFoundError`] if there is no latest version (i.e., no version has been published).
     #[inline]
     pub async fn latest_version(&self) -> SpigetApiResult<SpigetResourceVersion> {
+        log::debug!("finding latest version");
+
         let latest_version = self
             .versions(1)
             .await?
             .first()
             .cloned()
             .ok_or(SpigetApiError::NotFoundError)?;
+
         let resource_id = self.resource_id();
 
         Ok(SpigetResourceVersion {
@@ -556,5 +601,92 @@ impl SpigetPlugin {
                 .compute_download_url(self.resource_id(), version.id),
             version,
         })
+    }
+
+    /// Search for a version with the specified name.
+    /// Will return the most recent version with this name.
+    ///
+    /// Errors with [`SpigetApiError::NotFoundError`] if a version with the given name could not be found.
+    #[inline]
+    pub async fn search_version(
+        &self,
+        version_name: &str,
+    ) -> SpigetApiResult<SpigetResourceVersion> {
+        let mut stream = self.version_stream();
+        while let Some(version) = stream.next().await {
+            let version = version?;
+
+            if version.version.name == version_name {
+                return Ok(version);
+            }
+        }
+
+        Err(SpigetApiError::NotFoundError)
+    }
+}
+
+/// The output of a [`SpigetPlugin::versions`] call.
+pub type VersionsOutput<'a> = RwLockReadGuard<'a, [SpigetResourceVersion]>;
+
+#[derive(new)]
+pub struct SpigetVersionStream<'a> {
+    plugin: &'a SpigetPlugin,
+    #[new(default)]
+    idx: usize,
+    #[new(default)]
+    versions_fut: Option<FutureObj<'a, SpigetApiResult<VersionsOutput<'a>>>>,
+    #[new(default)]
+    versions: Option<VersionsOutput<'a>>,
+}
+
+impl<'a> Stream for SpigetVersionStream<'a> {
+    type Item = SpigetApiResult<SpigetResourceVersion>;
+
+    #[inline]
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
+        let plugin = self.plugin;
+        let idx = self.idx;
+
+        log::debug!("-----------------------");
+        log::debug!("idx={idx}");
+
+        let versions = &self.versions;
+
+        let versions = match versions {
+            Some(existing) => existing,
+            None => {
+                let fut = self.versions_fut.get_or_insert_with(|| {
+                    let limit = (idx as u64) * 2 + 10;
+                    log::debug!("creating new versions_fut. limit={limit}");
+                    FutureObj::new(Box::new(plugin.versions(limit)))
+                });
+
+                let Poll::Ready(result) = fut.poll_unpin(cx)? else {
+                    return Poll::Pending;
+                };
+
+                self.versions = Some(result);
+                self.versions.as_ref().unwrap()
+            }
+        };
+
+        if self.idx >= versions.len() {
+            log::debug!("drained");
+            Poll::Ready(None)
+        } else {
+            let out = versions[self.idx].clone();
+            let versions_len = versions.len();
+            log::debug!("out={out:?}");
+
+            self.idx += 1;
+            // in this case, we've exhausted the current versions, and need to get new ones
+            if self.idx >= versions_len {
+                log::debug!("resetting version_fut");
+                self.versions_fut = None;
+                self.versions = None;
+            }
+
+            Poll::Ready(Some(SpigetApiResult::Ok(out)))
+        }
     }
 }

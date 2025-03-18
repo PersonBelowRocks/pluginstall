@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use derive_new::new;
+use http_cache_reqwest::CACacheManager;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock};
@@ -24,6 +25,9 @@ pub static CACHE_INDEX_FILE_NAME: &str = "index.json";
 /// The name of the directory where cached plugin files are stored.
 pub static CACHE_DATA_DIRECTORY_NAME: &str = "data";
 
+/// The name of the (cacache)[https://github.com/zkat/cacache-rs] file in the cache directory.
+pub static CACACHE_NAME: &str = "http_cacache";
+
 #[derive(thiserror::Error, Debug)]
 pub enum CacheError {
     #[error("IO error '{0}'")]
@@ -37,15 +41,36 @@ pub type CacheResult<T> = Result<T, CacheError>;
 /// Get the default cache directory path, returning an error if it could not be found.
 #[inline]
 pub fn default_cache_directory_path() -> Result<PathBuf, IoError> {
-    homedir::my_home()
+    let home_dir = homedir::my_home()
         .map_err(|err| IoError::new(ErrorKind::Other, err))?
-        .ok_or_else(|| {
-            IoError::new(
-                ErrorKind::NotFound,
-                "Could not find home directory for the current user",
-            )
-        })
-        .map(|path| path.join(DEFAULT_CACHE_DIRECTORY_NAME))
+        .filter(|path| path.exists() && path.is_dir())
+        .ok_or_else(|| IoError::new(ErrorKind::Other, "home directory does not exist"))?;
+
+    Ok(home_dir.join(DEFAULT_CACHE_DIRECTORY_NAME))
+}
+
+/// Create a cache at the given path. This will initialize the required files and subdirectories for the location
+/// to be a valid cache.
+#[inline]
+pub async fn create_cache(cache_path: &Path) -> Result<(), IoError> {
+    tokio::fs::create_dir_all(cache_path).await?;
+
+    let index_file_path = cache_path.join(CACHE_INDEX_FILE_NAME);
+    // create the index file with an empty map
+    if !index_file_path.exists() || !index_file_path.is_file() {
+        File::create(index_file_path)
+            .await?
+            .write_all("{}".as_bytes())
+            .await?;
+    }
+
+    let data_dir_path = cache_path.join(CACHE_DATA_DIRECTORY_NAME);
+    // create the data directory
+    if !data_dir_path.exists() || !data_dir_path.is_dir() {
+        tokio::fs::create_dir(data_dir_path).await?;
+    }
+
+    Ok(())
 }
 
 /// Compute the name of a file with cached data of a plugin.
@@ -59,13 +84,13 @@ fn compute_cache_file_name(
 }
 
 /// Representation of the cache on disk. Supports various cache operations.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DownloadCache {
     cache_path: PathBuf,
     cache_index_path: PathBuf,
     cache_datadir_path: PathBuf,
     /// The deserialized cache index from the index file.
-    cache_index: Arc<RwLock<CacheIndex>>,
+    cache_index: RwLock<CacheIndex>,
 }
 
 #[allow(dead_code)]
@@ -103,8 +128,16 @@ impl DownloadCache {
             cache_index_path: index_path,
             cache_datadir_path: data_path,
 
-            cache_index: Arc::new(RwLock::new(cache_index)),
+            cache_index: RwLock::new(cache_index),
         })
+    }
+
+    /// Get the cache manager for caching general HTTP requests.
+    #[inline]
+    pub fn cacache_manager(&self) -> CACacheManager {
+        CACacheManager {
+            path: self.cache_path.join(CACACHE_NAME),
+        }
     }
 
     /// Attempt to open the cache index file on the disk.
@@ -274,6 +307,7 @@ pub struct CachedFile {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct CacheIndex {
     /// Maps the manifest name of plugins to their cached files.
+    #[serde(default)]
     pub plugins: HashMap<String, CacheIndexPlugin>,
 }
 
