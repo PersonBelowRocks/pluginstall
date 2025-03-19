@@ -3,11 +3,13 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use miette::{Context, SourceOffset};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
 use crate::adapter::hangar::ManifestHangarPlugin;
 use crate::adapter::spiget::ManifestSpigetPlugin;
+use crate::error::{NotFoundError, ParseError};
 
 pub static DEFAULT_MANIFEST_FILE_NAME: &str = "pluginstall.manifest.toml";
 
@@ -42,7 +44,7 @@ pub enum PluginDownloadSpec {
 }
 
 /// Error returned when trying to process a manifest file.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
 pub enum ManifestError {
     /// IO error, usually because a file could not be found at the specified path.
     #[error(transparent)]
@@ -51,7 +53,7 @@ pub enum ManifestError {
     /// Parse error, usually because the manifest file was not in valid TOML,
     /// lacked required keys, or contained unrecognized keys.
     #[error(transparent)]
-    Parse(#[from] toml::de::Error),
+    Parse(#[from] ParseError),
 }
 
 /// Type alias for the generic result type returned by manifest operations.
@@ -76,8 +78,19 @@ impl Manifest {
     #[inline]
     pub fn parse(toml: impl AsRef<str>) -> ManifestResult<Self> {
         let toml = toml.as_ref();
+        let deser = toml::from_str::<Self>(toml).map_err(|error| ParseError::toml(error, toml))?;
 
-        Ok(toml::de::from_str(toml)?)
+        Ok(deser)
+    }
+
+    #[inline]
+    pub fn plugin(&self, plugin_name: impl AsRef<str>) -> miette::Result<&PluginDownloadSpec> {
+        let plugin_name = plugin_name.as_ref();
+
+        self.plugin
+            .get(plugin_name)
+            .ok_or(NotFoundError::ManifestPlugin)
+            .wrap_err_with(|| format!("No plugin with name '{plugin_name}' found in the manifest."))
     }
 }
 

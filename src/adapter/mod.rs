@@ -172,3 +172,12 @@ pub enum VersionSpec {
     #[display("latest")]
     Latest,
 }
+
+impl VersionSpec {
+    /// Check if this version spec describes the latest version.
+    /// (i.e., [`VersionSpec::Latest`])
+    #[inline]
+    pub fn is_latest(&self) -> bool {
+        matches!(self, Self::Latest)
+    }
+}

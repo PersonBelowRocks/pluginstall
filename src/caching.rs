@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::adapter::PluginApiType;
+use crate::error::ParseError;
 use crate::ok_none;
 
 /// The name of the directory where cached data is stored.
@@ -28,12 +29,13 @@ pub static CACHE_DATA_DIRECTORY_NAME: &str = "data";
 /// The name of the (cacache)[https://github.com/zkat/cacache-rs] file in the cache directory.
 pub static CACACHE_NAME: &str = "http_cacache";
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
 pub enum CacheError {
     #[error("IO error '{0}'")]
     IoError(#[from] std::io::Error),
-    #[error("JSON error: '{0}'")]
-    JsonError(#[from] serde_json::Error),
+    /// An error serializing/deserializing the cache index
+    #[error(transparent)]
+    CacheIndexError(#[from] CacheIndexError),
 }
 
 pub type CacheResult<T> = Result<T, CacheError>;
@@ -117,11 +119,7 @@ impl DownloadCache {
             log::error!("Invalid cache index file: {}", index_path.to_string_lossy())
         })?;
 
-        let mut cache_file_contents = String::new();
-        index_file.read_to_string(&mut cache_file_contents).await?;
-        index_file.rewind().await?;
-
-        let cache_index = serde_json::from_str::<CacheIndex>(&cache_file_contents)?;
+        let cache_index = CacheIndex::parse_from_file(&index_path).await?;
 
         Ok(Self {
             cache_path: cache_path.to_path_buf(),
@@ -157,7 +155,9 @@ impl DownloadCache {
     #[inline]
     async fn sync_index_to_fs(&self) -> CacheResult<()> {
         let index = self.cache_index.read().await;
-        let json = serde_json::to_string_pretty(&*index)?; // pretty format so its somewhat human readable
+        // pretty format so its somewhat human readable
+        let json =
+            serde_json::to_string_pretty(&*index).expect("this serialization impl shouldn't fail");
 
         let mut index_file = self.open_and_clear_index_file().await?;
 
@@ -332,6 +332,41 @@ pub struct CacheIndexFile {
     pub ttl: Option<chrono::Duration>,
     /// The date that this file was added to the cache.
     pub added: chrono::DateTime<Utc>,
+}
+
+/// An error serializing/deserializing the cache index.
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
+pub enum CacheIndexError {
+    #[error(transparent)]
+    IoError(#[from] IoError),
+    #[error(transparent)]
+    ParseError(#[from] ParseError),
+}
+
+impl CacheIndex {
+    /// Parse a cache index object from a file path. Will return errors if the file could not be
+    /// found/opened, or if the file contents were not valid cache index JSON.
+    #[inline]
+    pub async fn parse_from_file(path: impl AsRef<Path>) -> Result<Self, CacheIndexError> {
+        let path = path.as_ref();
+        let mut cache_index_file = File::open(path).await?;
+
+        let mut cache_index_file_contents = String::with_capacity(1024);
+        cache_index_file
+            .read_to_string(&mut cache_index_file_contents)
+            .await?;
+
+        Self::parse(cache_index_file_contents)
+    }
+
+    #[inline]
+    pub fn parse(json: impl AsRef<str>) -> Result<Self, CacheIndexError> {
+        let json = json.as_ref();
+        let deser =
+            serde_json::from_str::<Self>(json).map_err(|error| ParseError::json(error, json))?;
+
+        Ok(deser)
+    }
 }
 
 impl CacheIndexFile {

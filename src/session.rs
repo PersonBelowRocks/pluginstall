@@ -5,11 +5,7 @@ use std::{io, sync::Arc};
 use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use reqwest_middleware::ClientWithMiddleware;
 
-use crate::{
-    adapter::spiget::{SpigetApiClient, SpigetApiError},
-    caching::DownloadCache,
-    output::CliOutput,
-};
+use crate::{adapter::spiget::SpigetApiClient, caching::DownloadCache, output::CliOutput};
 
 /// The user agent to be used by pluginstall when talking to APIs.
 pub static USER_AGENT: &str = "pluginstall CLI app (github PersonBelowRocks/pluginstall)";
@@ -17,9 +13,6 @@ pub static USER_AGENT: &str = "pluginstall CLI app (github PersonBelowRocks/plug
 /// Error emitted by [`IoSession`] operations.
 #[derive(thiserror::Error, Debug)]
 pub enum IoSessionError {
-    /// Error with the Spiget API.
-    #[error("Spiget API error: {0}")]
-    SpigetError(#[from] SpigetApiError),
     /// Error with CLI output.
     #[error("CLI output error: {0}")]
     CliOutputError(io::Error),

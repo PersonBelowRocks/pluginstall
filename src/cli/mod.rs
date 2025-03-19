@@ -1,14 +1,28 @@
 //! CLI interface logic
 
+mod versions;
+pub use versions::*;
+
+mod info;
+pub use info::*;
+
+mod download;
+pub use download::*;
+
+use crate::adapter::VersionSpec;
+
+/// An error that indicates a specified plugin name could not be found in the manifest.
+#[derive(thiserror::Error, Debug, Clone)]
+#[error("Could not find a plugin with the name '{0}' in the manifest.")]
+pub struct PluginNotFoundError(pub String);
+
 use crate::caching::{create_cache, default_cache_directory_path, CacheResult, DownloadCache};
+use crate::cli;
 use crate::manifest::{Manifest, ManifestResult, DEFAULT_MANIFEST_FILE_NAME};
 use crate::output::CliOutput;
 use crate::session::IoSession;
-use crate::subcommands;
 use std::borrow::Cow;
-use std::env::current_dir;
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::path::PathBuf;
 
 /// The CLI command with its parameters, parsed from the arguments provided to the process.
 #[derive(clap::Parser, Clone, Debug)]
@@ -19,9 +33,9 @@ pub struct Cli {
         short,
         long,
         value_name = "MANIFEST_FILE",
-        help = "The path to the plugin manifest file."
+        default_value = DEFAULT_MANIFEST_FILE_NAME
     )]
-    pub manifest: Option<PathBuf>,
+    pub manifest: PathBuf,
 
     /// Path to the download cache. Downloaded plugins will be cached in a subdirectory
     /// in the download cache with the name of the manifest used.
@@ -32,39 +46,64 @@ pub struct Cli {
     #[arg(long, value_name = "CACHE_PATH")]
     pub cache: Option<PathBuf>,
 
-    #[arg(long, action=clap::ArgAction::SetTrue, help = "Use JSON output instead of human readable output.")]
-    pub json: bool,
-
-    #[arg(long, action=clap::ArgAction::SetTrue, help = "Don't write a newline at the end of the command output.")]
-    pub no_newline: bool,
+    /// Output control arguments
+    #[clap(flatten)]
+    pub output_ctrl: OutputCtrlArgs,
 
     /// The subcommand
     #[command(subcommand)]
     pub command: Commands,
 }
 
+/// Arguments for controlling CLI output.
+#[derive(clap::Args, Debug, Clone)]
+pub struct OutputCtrlArgs {
+    /// Use JSON output instead of human readable output.
+    #[arg(long, action=clap::ArgAction::SetTrue)]
+    pub json: bool,
+
+    /// Don't write a newline at the end of the command output.
+    #[arg(long, action=clap::ArgAction::SetTrue)]
+    pub no_newline: bool,
+}
+
+/// Version specification arguments. If no argument is provided, then the latest version is specified.
+#[derive(clap::Args, Debug, Clone)]
+#[group(required = false, multiple = false)]
+pub struct VersionSpecArgs {
+    /// The name of a version to search for.
+    /// If multiple versions have the same name, the latest version will be chosen.
+    #[arg(long, short = 'V', value_name = "VERSION_NAME")]
+    pub version_name: Option<String>,
+    /// The unique version identifier of a version.
+    #[arg(long, short = 'I', value_name = "VERSION_IDENTIFIER")]
+    pub version_ident: Option<String>,
+}
+
+/// Arguments for specifying a specific plugin.
+#[derive(clap::Args, Debug, Clone)]
+#[group(required = true)]
+pub struct PluginSpecArgs {
+    /// The name of the plugin in the manifest file.
+    /// Download strategy for the is specified in the manifest file under this key.
+    #[arg(value_name = "PLUGIN_NAME")]
+    pub plugin_name: String,
+}
+
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum Commands {
     #[command(about = "List all versions of a plugin.")]
-    Versions(subcommands::Versions),
+    Versions(cli::Versions),
     #[command(about = "Show info about a plugin.")]
-    Info(subcommands::Info),
+    Info(cli::Info),
     #[command(about = "Download a plugin.")]
-    Download(subcommands::Download),
+    Download(cli::Download),
 }
 
 macro_rules! run_subcommand {
     ($commands:expr, $variant:ident, $session:expr, $manifest:expr) => {
         if let Commands::$variant(cmd) = $commands {
-            match cmd.run($session, $manifest).await {
-                Ok(()) => return ExitCode::SUCCESS,
-                Err(error) => {
-                    // let std_err = AsRef::<dyn std::error::Error>::as_ref(&error);
-                    log::error!("{}", error);
-
-                    return ExitCode::FAILURE;
-                }
-            }
+            cmd.run($session, $manifest).await?;
         }
     };
 }
@@ -72,46 +111,33 @@ macro_rules! run_subcommand {
 impl Commands {
     /// Run the subcommand.
     #[inline]
-    pub async fn run(&self, session: &IoSession, manifest: &Manifest) -> ExitCode {
+    pub async fn run(&self, session: &IoSession, manifest: &Manifest) -> miette::Result<()> {
         run_subcommand!(self, Versions, session, manifest);
         run_subcommand!(self, Info, session, manifest);
         run_subcommand!(self, Download, session, manifest);
 
-        unreachable!();
+        Ok(())
     }
 }
 
 /// Trait implemented by subcommands.
 pub trait Subcommand {
-    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<()>;
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> miette::Result<()>;
 }
 
 impl Cli {
-    /// Get the path to the manifest file. Returns an error if the current working directory is invalid.
-    #[inline]
-    fn manifest_file_path(&self) -> ManifestResult<Cow<'_, Path>> {
-        self.manifest.as_ref().map_or_else(
-            || {
-                let mut dir = current_dir()?;
-                dir.push(DEFAULT_MANIFEST_FILE_NAME);
-                Ok(Cow::<Path>::Owned(dir))
-            },
-            |manifest| Ok(Cow::Borrowed(manifest.as_ref())),
-        )
-    }
-
     /// Parse the manifest file specified by the options passed to this CLI.
     /// If no manifest file is specified, this will parse the default manifest file.
     #[inline]
     pub async fn manifest(&self) -> ManifestResult<Manifest> {
-        Manifest::parse_from_file(self.manifest_file_path()?.as_ref()).await
+        Manifest::parse_from_file(&self.manifest).await
     }
 
     /// Create a [`CliOutput`] object using the output options provided to the CLI.
     #[must_use]
     #[inline]
     pub fn cli_output(&self) -> CliOutput {
-        CliOutput::new(self.json, !self.no_newline)
+        CliOutput::new(self.output_ctrl.json, !self.output_ctrl.no_newline)
     }
 
     /// Create a [`DownloadCache`] object with the options provided to the CLI and the name of the manifest used.
@@ -134,5 +160,21 @@ impl Cli {
         };
 
         DownloadCache::new(&path).await
+    }
+}
+
+impl VersionSpecArgs {
+    /// Get the version spec provided to the command.
+    ///
+    /// Will return [`VersionSpec::Latest`] if neither were specified.
+    /// Will panic if both the version name and version identifier are specified.
+    #[inline]
+    pub fn get(&self) -> VersionSpec {
+        match (self.version_ident.as_ref(), self.version_name.as_ref()) {
+            (Some(version_ident), None) => VersionSpec::Identifier(version_ident.clone()),
+            (None, Some(version_name)) => VersionSpec::Name(version_name.clone()),
+            (None, None) => VersionSpec::Latest,
+            _ => panic!("You cannot specify both version identifier and version name."),
+        }
     }
 }

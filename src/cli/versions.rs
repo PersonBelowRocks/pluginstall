@@ -1,6 +1,7 @@
 //! The 'versions' subcommand for listing versions of a plugin.
 
 use clap::Args;
+use miette::IntoDiagnostic;
 use owo_colors::AnsiColors;
 
 use crate::{
@@ -15,16 +16,13 @@ use crate::{
     util::{CliTable, CliTableRow},
 };
 
-use super::PluginNotFoundError;
+use super::PluginSpecArgs;
 
 /// The 'versions' subcommand.
 #[derive(Args, Debug, Clone)]
 pub struct Versions {
-    #[arg(
-        value_name = "PLUGIN_NAME",
-        help = "The name of the plugin in the manifest file."
-    )]
-    pub plugin_name: String,
+    #[command(flatten)]
+    pub plugin: PluginSpecArgs,
     #[arg(
         short = 'L',
         long,
@@ -128,30 +126,32 @@ impl<'a, P: PluginDetails, V: PluginVersion> DataDisplay for VersionsOutput<'a, 
 impl Subcommand for Versions {
     /// Run the versions command.
     #[inline]
-    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<()> {
-        let manifest_name = &self.plugin_name;
-
-        let Some(plugin_manifest) = manifest.plugin.get(manifest_name) else {
-            return Err(PluginNotFoundError(self.plugin_name.clone()).into());
-        };
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> miette::Result<()> {
+        let plugin_manifest = manifest.plugin(&self.plugin.plugin_name)?;
 
         match plugin_manifest {
             PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
                 let spiget_plugin =
                     SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
 
-                let versions = spiget_plugin.versions(self.limit).await?;
+                let versions = spiget_plugin
+                    .iter_versions()
+                    .take(self.limit as _)
+                    .collect::<Vec<_>>();
 
                 let output = VersionsOutput {
                     cfg: VersionsOutputCfg {
                         strftime_format: self.time_format.clone(),
                         write_download_urls: self.download_url,
                     },
-                    details: SpigetResourceDetails::new(spiget_plugin.resource_id(), manifest_name),
+                    details: SpigetResourceDetails::new(
+                        spiget_plugin.resource_id(),
+                        &self.plugin.plugin_name,
+                    ),
                     versions: &*versions,
                 };
 
-                session.cli_output().display(&output)?;
+                session.cli_output().display(&output).into_diagnostic()?;
             }
 
             _ => todo!(),

@@ -14,14 +14,19 @@ use std::{
 use chrono::Utc;
 use derive_new::new;
 use futures::{task::FutureObj, FutureExt, Stream, StreamExt, TryStream};
+use indexmap::IndexMap;
+use miette::{Context, Error, IntoDiagnostic};
 use reqwest_middleware::ClientWithMiddleware;
 use rq::{Response, StatusCode, Url};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
-use crate::session::IoSession;
+use crate::{
+    error::{NotFoundError, ParseError, UnexpectedHttpStatus},
+    session::IoSession,
+};
 
-use super::{PluginApiType, PluginDetails, PluginVersion};
+use super::{PluginApiType, PluginDetails, PluginVersion, VersionSpec};
 
 /// A Spiget plugin entry in the manifest.
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -81,24 +86,18 @@ impl FromStr for ResourceId {
 pub struct VersionId(u64);
 
 impl FromStr for VersionId {
-    type Err = ParseIntError;
+    type Err = VersionIdParseError;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        u64::from_str(s).map(Self)
+        u64::from_str(s).map(Self).map_err(|_| VersionIdParseError)
     }
 }
 
-/// Represents an error from an operation on a [`SpigetPlugin`] type.
-#[derive(thiserror::Error, Debug)]
-pub enum SpigetError {
-    #[error("Resource with ID '{0}' could not be found.")]
-    ResourceNotFound(ResourceId),
-    #[error("Version with ID '{1}' of resource with ID '{0}' could not be found.")]
-    ResourceVersionNotFound(ResourceId, VersionId),
-    #[error("Internal error: {0}")]
-    InternalError(#[from] SpigetApiError),
-}
+/// The error returned by [`<VersionId as FromStr>::from_str`].
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
+#[error("Error parsing version ID")]
+pub struct VersionIdParseError;
 
 /// Model for the resource details as returned by the Spiget API.
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -120,10 +119,19 @@ pub struct SpigetResourceJson {
     pub update_date: chrono::DateTime<Utc>,
     pub downloads: u64,
     pub external: bool,
+    pub versions: Vec<TinyVersionJson>,
     // we don't have a resource icon field, since this is a CLI app
     // we don't include information regarding the premium status of a resource because im lazy
     pub source_code_link: Option<String>,
     pub donation_link: Option<String>,
+}
+
+/// A small version JSON object present in the resource details JSON object's `versions` field.
+/// Only contains version IDs, and no other information about the version.
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct TinyVersionJson {
+    pub id: VersionId,
+    pub uuid: Uuid,
 }
 
 /// Model for a resource file as returned by the Spiget API.
@@ -218,9 +226,9 @@ impl SpigetResourceDetails {
     /// Nothing guarantees that the computed page URL will point to a valid resource.
     /// Make sure that there actually exists a resource with the given resource ID before calling this.
     #[inline]
-    pub fn new(resource_id: ResourceId, manifest_name: &str) -> Self {
+    pub fn new(resource_id: ResourceId, manifest_name: impl Into<String>) -> Self {
         Self {
-            manifest_name: manifest_name.to_string(),
+            manifest_name: manifest_name.into(),
             page_url: Url::parse(&format!("https://www.spigotmc.org/resources/{resource_id}"))
                 .unwrap(),
         }
@@ -244,28 +252,8 @@ impl PluginDetails for SpigetResourceDetails {
 /// The base URL for the Spiget API.
 pub(crate) static BASE_URL: &str = "https://api.spiget.org/v2/";
 
-/// An error with the Spiget API.
-#[derive(thiserror::Error, Debug)]
-pub enum SpigetApiError {
-    /// An underlying error from reqwest-middleware.
-    #[error("reqwest-middleware error: {0}")]
-    ReqwestMiddlewareError(#[from] reqwest_middleware::Error),
-    /// An underlying error from reqwest.
-    #[error("reqwest error: {0}")]
-    ReqwestError(#[from] rq::Error),
-    /// An error with parsing a JSON response.
-    #[error("JSON error: {0}")]
-    JsonError(#[from] serde_json::Error),
-    /// A 404 error. Usually emitted when a requested resource or resource version does not exist.
-    #[error("The requested resource or resource version does not exist.")]
-    NotFoundError,
-    /// Emitted when the Spiget API returns an unexpected status code.
-    #[error("Spiget API returned bad status code: '{0}'")]
-    UnknownApiError(StatusCode),
-}
-
 /// A type alias to clean up function signatures a bit.
-pub type SpigetApiResult<T> = Result<T, SpigetApiError>;
+pub type SpigetApiResult<T> = miette::Result<T>;
 
 // TODO: get all versions of the plugin immediately instead of getting them lazily as they are requested.
 //  this will be more cache-friendly and much, much, much simpler
@@ -287,6 +275,25 @@ impl SpigetApiClient {
         self.spiget_base_url.join(path)
     }
 
+    /// Build the request from the given builder, wrapping errors for better user feedback.
+    #[inline]
+    async fn send_request(
+        &self,
+        request: reqwest_middleware::RequestBuilder,
+    ) -> SpigetApiResult<Response> {
+        let request = request
+            .build()
+            .into_diagnostic()
+            .wrap_err("Error building request for Spiget API")?;
+        let url = request.url().clone();
+
+        self.client
+            .execute(request)
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| format!("Spiget API error with URL '{url}'"))
+    }
+
     /// Compute the download URL for a given version of a given resource.
     /// The URL is not guaranteed to even point to an existing resource or version, this is just a helper method to avoid code duplication.
     /// Validation of the provided URL must be done seperately.
@@ -303,9 +310,18 @@ impl SpigetApiClient {
     async fn parse_response<T: for<'a> serde::Deserialize<'a>>(
         response: Response,
     ) -> SpigetApiResult<T> {
-        let response_bytes = response.bytes().await?;
-        let out = serde_json::from_slice::<T>(&response_bytes)?;
-        Ok(out)
+        let url = response.url().clone();
+        let response_text = response
+            .text()
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| format!("Error reading response data from '{url}'"))?;
+
+        let deser = serde_json::from_str::<T>(&response_text)
+            .map_err(|error| ParseError::json(error, response_text))
+            .wrap_err_with(|| format!("Error parsing response JSON from '{url}'"))?;
+
+        Ok(deser)
     }
 
     /// Get resource details from the `/resources/{resource_id}` endpoint.
@@ -321,13 +337,15 @@ impl SpigetApiClient {
             .endpoint_url(&format!("resources/{resource_id}"))
             .unwrap();
 
-        let response = self.client.get(url).send().await?;
+        let req = self.client.get(url);
+        let response = self.send_request(req).await?;
 
         match response.status() {
             StatusCode::OK => Self::parse_response(response).await,
-            StatusCode::NOT_FOUND => Err(SpigetApiError::NotFoundError),
-            status @ _ => Err(SpigetApiError::UnknownApiError(status)),
+            StatusCode::NOT_FOUND => Err(NotFoundError::ApiPlugin.into()),
+            status @ _ => Err(UnexpectedHttpStatus(status).into()),
         }
+        .wrap_err_with(|| format!("Error getting details of resource '{resource_id}'"))
     }
 
     /// Get a list of versions for this resource, starting at the most recent.
@@ -353,13 +371,15 @@ impl SpigetApiClient {
             "size={size}&sort=-releaseDate&fields=id,name,releaseDate"
         )));
 
-        let response = self.client.get(url).send().await?;
+        let req = self.client.get(url);
+        let response = self.send_request(req).await?;
 
         match response.status() {
             StatusCode::OK => Self::parse_response(response).await,
-            StatusCode::NOT_FOUND => Err(SpigetApiError::NotFoundError),
-            status @ _ => Err(SpigetApiError::UnknownApiError(status)),
+            StatusCode::NOT_FOUND => Err(NotFoundError::ApiPlugin.into()),
+            status @ _ => Err(UnexpectedHttpStatus(status).into()),
         }
+        .wrap_err_with(|| format!("Error getting version list of resource '{resource_id}'"))
     }
 
     /// Get a specific version of the resource.
@@ -376,13 +396,17 @@ impl SpigetApiClient {
             .endpoint_url(&format!("resources/{resource_id}/versions/{version_id}"))
             .unwrap();
 
-        let response = self.client.get(url).send().await?;
+        let req = self.client.get(url);
+        let response = self.send_request(req).await?;
 
         match response.status() {
             StatusCode::OK => Self::parse_response(response).await,
-            StatusCode::NOT_FOUND => Err(SpigetApiError::NotFoundError),
-            status @ _ => Err(SpigetApiError::UnknownApiError(status)),
+            StatusCode::NOT_FOUND => Err(NotFoundError::Version.into()),
+            status @ _ => Err(UnexpectedHttpStatus(status).into()),
         }
+        .wrap_err_with(|| {
+            format!("Error getting version with ID '{version_id}' of resource '{resource_id}'")
+        })
     }
 
     /// Get a the version of the resource. Similar to [`SpigetApiClient::resource_version`] instead of getting a specific version, this gets the latest version.
@@ -397,13 +421,15 @@ impl SpigetApiClient {
             .endpoint_url(&format!("resources/{resource_id}/versions/latest"))
             .unwrap();
 
-        let response = self.client.get(url).send().await?;
+        let req = self.client.get(url);
+        let response = self.send_request(req).await?;
 
         match response.status() {
             StatusCode::OK => Self::parse_response(response).await,
-            StatusCode::NOT_FOUND => Err(SpigetApiError::NotFoundError),
-            status @ _ => Err(SpigetApiError::UnknownApiError(status)),
+            StatusCode::NOT_FOUND => Err(NotFoundError::Version.into()),
+            status @ _ => Err(UnexpectedHttpStatus(status).into()),
         }
+        .wrap_err_with(|| format!("Error getting latest version of resource '{resource_id}'"))
     }
 
     /// Get the URL to download the provided version of the provided resource.
@@ -420,7 +446,7 @@ impl SpigetApiClient {
     ) -> SpigetApiResult<Url> {
         let response_version = self.resource_version(resource_id, version_id).await?;
 
-        // rename here to make code cleared
+        // rename here to make code clearer
         let expected_version_id = version_id;
 
         // ensure that the version IDs actually match up, which they probably do, but we'll play it safe.
@@ -436,7 +462,7 @@ impl SpigetApiClient {
                 response_version_id
             );
 
-            return Err(SpigetApiError::NotFoundError);
+            return Err(miette::Error::from(NotFoundError::Version)).wrap_err_with(|| format!("Error getting download URL for version '{version_id}' of resource '{resource_id}'"));
         }
 
         // we've verified that the resource and version exist, so this is okay
@@ -445,15 +471,31 @@ impl SpigetApiClient {
     }
 }
 
+/// Construct a map of the latest versions of a given resource.
+/// The `limit` argument specifies the maximum number of versions to fetch, starting with the latest.
+#[inline]
+async fn versions_map(
+    session: &IoSession,
+    resource_id: ResourceId,
+    limit: u64,
+) -> SpigetApiResult<SpigetVersionMap> {
+    let versions = session
+        .spiget_api()
+        .resource_versions(resource_id, limit)
+        .await?;
+    Ok(IndexMap::from_iter(versions.into_iter().map(|v| (v.id, v))))
+}
+
+/// Map of version IDs and the JSON for those versions.
+pub type SpigetVersionMap = IndexMap<VersionId, SpigetVersionJson>;
+
 /// A plugin on the Spiget API. Provides a friendly interface for getting information about the plugin.
 #[derive(Clone)]
 pub struct SpigetPlugin {
     io: IoSession,
     resource_details: SpigetResourceJson,
-    /// Cached list of versions sorted from latest to oldest.
-    cached_latest_versions: Arc<RwLock<Vec<SpigetResourceVersion>>>,
-    /// Cached version details.
-    cached_versions: Arc<RwLock<HashMap<VersionId, SpigetVersionJson>>>,
+    /// Cached version details. Ordered by release date, with the latest version first.
+    cached_versions: Arc<IndexMap<VersionId, SpigetVersionJson>>,
 }
 
 impl SpigetPlugin {
@@ -465,13 +507,18 @@ impl SpigetPlugin {
         session: &IoSession,
         resource_id: ResourceId,
     ) -> SpigetApiResult<SpigetPlugin> {
-        let resource_details = session.spiget_api().resource_details(resource_id).await?;
+        let resource_details = session
+            .spiget_api()
+            .resource_details(resource_id)
+            .await
+            .wrap_err("Error with Spiget API")?;
+        let num_of_versions = resource_details.versions.len() as u64;
+        let versions = versions_map(session, resource_details.id, num_of_versions).await?;
 
         Ok(Self {
             io: session.clone(),
+            cached_versions: Arc::new(versions),
             resource_details,
-            cached_latest_versions: Default::default(),
-            cached_versions: Default::default(),
         })
     }
 
@@ -480,120 +527,50 @@ impl SpigetPlugin {
         self.resource_details.id
     }
 
-    /// Update the internal version cache until it's either the size of the provided `limit`, or there are no more versions.
-    #[inline]
-    async fn update_latest_version_cache(&self, limit: u64) -> SpigetApiResult<()> {
-        // cache is already bigger than the limit.
-        // we don't handle edge cases where versions are deleted between the previous cache update and this one.
-        if limit < self.cached_latest_versions.read().await.len() as u64 {
-            return Ok(());
-        }
-
-        let versions = self
-            .io
-            .spiget_api()
-            .resource_versions(self.resource_id(), limit)
-            .await?;
-
-        let mut cache = self.cached_latest_versions.write().await;
-
-        cache.clear();
-        cache.extend(versions.into_iter().map(|version| {
-            SpigetResourceVersion {
-                resource_id: self.resource_id(),
-                download_url: self
-                    .io
-                    .spiget_api()
-                    .compute_download_url(self.resource_id(), version.id),
-                version,
-            }
-        }));
-
-        Ok(())
-    }
-
     /// Try getting a version from the version cache.
     #[inline]
-    async fn get_cached_version(&self, version_id: VersionId) -> Option<SpigetVersionJson> {
-        self.cached_versions.read().await.get(&version_id).cloned()
-    }
-
-    /// Cache the given version.
-    #[inline]
-    async fn cache_version(&self, version: SpigetVersionJson) {
-        self.cached_versions
-            .write()
-            .await
-            .insert(version.id, version);
-    }
-
-    /// Get the `limit` latest versions of this plugin. The slice is sorted from latest version to oldest version.
-    ///
-    /// This caches the versions internally, so subsequent calls with the same or smaller `limit` will get the cached data.
-    #[inline]
-    pub async fn versions(&self, limit: u64) -> SpigetApiResult<VersionsOutput<'_>> {
-        self.update_latest_version_cache(limit).await?;
-
-        let limit = limit as usize;
-        let guarded_slice = RwLockReadGuard::map(self.cached_latest_versions.read().await, |g| {
-            // ensure we're not indexing out of bounds
-            let limit = min(g.len() - 1, limit);
-            &g[..limit]
-        });
-
-        Ok(guarded_slice)
+    fn get_cached_version(&self, version_id: VersionId) -> Option<&SpigetVersionJson> {
+        self.cached_versions.get(&version_id)
     }
 
     #[inline]
-    pub fn version_stream(&self) -> SpigetVersionStream<'_> {
-        SpigetVersionStream::new(self)
+    pub fn iter_versions(&self) -> VersionsIter<'_> {
+        VersionsIter {
+            version_json_iter: self.cached_versions.values(),
+            resource_id: self.resource_id(),
+            spiget_api: self.io.spiget_api(),
+        }
     }
 
     /// Get the latest version of this plugin.
     ///
-    /// Returns [`SpigetApiError::NotFoundError`] if there is no latest version (i.e., no version has been published).
+    /// Returns [`None`] if there is no latest version (i.e., no version has been published).
     #[inline]
-    pub async fn latest_version(&self) -> SpigetApiResult<SpigetResourceVersion> {
+    pub fn latest_version(&self) -> Option<SpigetResourceVersion> {
         log::debug!("finding latest version");
 
-        let latest_version = self
-            .versions(1)
-            .await?
-            .first()
-            .cloned()
-            .ok_or(SpigetApiError::NotFoundError)?;
+        let latest_version = self.cached_versions.first().map(|e| e.1).cloned()?;
 
         let resource_id = self.resource_id();
 
-        Ok(SpigetResourceVersion {
+        Some(SpigetResourceVersion {
             download_url: self
                 .io
                 .spiget_api()
-                .compute_download_url(resource_id, latest_version.version.id),
-            version: latest_version.version,
+                .compute_download_url(resource_id, latest_version.id),
+            version: latest_version,
             resource_id,
         })
     }
 
     /// Get a specific version of this plugin.
     ///
-    /// Returns [`SpigetApiError::NotFoundError`] if the given version could not be found.
+    /// Returns [`None`] if the given version could not be found.
     #[inline]
-    pub async fn version(&self, version_id: VersionId) -> SpigetApiResult<SpigetResourceVersion> {
-        let version = match self.get_cached_version(version_id).await {
-            Some(cached_version) => cached_version,
-            None => {
-                let version = self
-                    .io
-                    .spiget_api()
-                    .resource_version(self.resource_id(), version_id)
-                    .await?;
-                self.cache_version(version.clone()).await;
-                version
-            }
-        };
+    pub fn version(&self, version_id: VersionId) -> Option<SpigetResourceVersion> {
+        let version = self.get_cached_version(version_id)?.clone();
 
-        Ok(SpigetResourceVersion {
+        Some(SpigetResourceVersion {
             resource_id: self.resource_id(),
             download_url: self
                 .io
@@ -606,87 +583,53 @@ impl SpigetPlugin {
     /// Search for a version with the specified name.
     /// Will return the most recent version with this name.
     ///
-    /// Errors with [`SpigetApiError::NotFoundError`] if a version with the given name could not be found.
+    /// Returns [`None`] if a version with the given name could not be found.
     #[inline]
-    pub async fn search_version(
+    pub fn search_version(&self, version_name: &str) -> Option<SpigetResourceVersion> {
+        self.iter_versions()
+            .find(|v| v.version.name == version_name)
+    }
+
+    /// Get a version from the given [`VersionSpec`].
+    /// Returns [`None`] if no version could be found for the given spec.
+    #[inline]
+    pub fn version_from_spec(
         &self,
-        version_name: &str,
-    ) -> SpigetApiResult<SpigetResourceVersion> {
-        let mut stream = self.version_stream();
-        while let Some(version) = stream.next().await {
-            let version = version?;
-
-            if version.version.name == version_name {
-                return Ok(version);
+        version_spec: &VersionSpec,
+    ) -> SpigetApiResult<Option<SpigetResourceVersion>> {
+        Ok(match version_spec {
+            VersionSpec::Identifier(ident) => {
+                let id = VersionId::from_str(ident)
+                    .wrap_err_with(|| format!("'{ident}' is not a valid Spiget version ID"))?;
+                self.version(id)
             }
-        }
-
-        Err(SpigetApiError::NotFoundError)
+            VersionSpec::Name(name) => self.search_version(name),
+            VersionSpec::Latest => self.latest_version(),
+        })
     }
 }
 
-/// The output of a [`SpigetPlugin::versions`] call.
-pub type VersionsOutput<'a> = RwLockReadGuard<'a, [SpigetResourceVersion]>;
-
-#[derive(new)]
-pub struct SpigetVersionStream<'a> {
-    plugin: &'a SpigetPlugin,
-    #[new(default)]
-    idx: usize,
-    #[new(default)]
-    versions_fut: Option<FutureObj<'a, SpigetApiResult<VersionsOutput<'a>>>>,
-    #[new(default)]
-    versions: Option<VersionsOutput<'a>>,
+/// An iterator over the versions of a plugin.
+pub struct VersionsIter<'a> {
+    version_json_iter: indexmap::map::Values<'a, VersionId, SpigetVersionJson>,
+    resource_id: ResourceId,
+    spiget_api: &'a SpigetApiClient,
 }
 
-impl<'a> Stream for SpigetVersionStream<'a> {
-    type Item = SpigetApiResult<SpigetResourceVersion>;
+impl Iterator for VersionsIter<'_> {
+    type Item = SpigetResourceVersion;
 
-    #[inline]
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
-        let plugin = self.plugin;
-        let idx = self.idx;
+    fn next(&mut self) -> Option<Self::Item> {
+        let next_version = self.version_json_iter.next()?;
 
-        log::debug!("-----------------------");
-        log::debug!("idx={idx}");
+        let download_url = self
+            .spiget_api
+            .compute_download_url(self.resource_id, next_version.id);
 
-        let versions = &self.versions;
-
-        let versions = match versions {
-            Some(existing) => existing,
-            None => {
-                let fut = self.versions_fut.get_or_insert_with(|| {
-                    let limit = (idx as u64) * 2 + 10;
-                    log::debug!("creating new versions_fut. limit={limit}");
-                    FutureObj::new(Box::new(plugin.versions(limit)))
-                });
-
-                let Poll::Ready(result) = fut.poll_unpin(cx)? else {
-                    return Poll::Pending;
-                };
-
-                self.versions = Some(result);
-                self.versions.as_ref().unwrap()
-            }
-        };
-
-        if self.idx >= versions.len() {
-            log::debug!("drained");
-            Poll::Ready(None)
-        } else {
-            let out = versions[self.idx].clone();
-            let versions_len = versions.len();
-            log::debug!("out={out:?}");
-
-            self.idx += 1;
-            // in this case, we've exhausted the current versions, and need to get new ones
-            if self.idx >= versions_len {
-                log::debug!("resetting version_fut");
-                self.versions_fut = None;
-                self.versions = None;
-            }
-
-            Poll::Ready(Some(SpigetApiResult::Ok(out)))
-        }
+        Some(SpigetResourceVersion {
+            resource_id: self.resource_id,
+            version: next_version.clone(),
+            download_url,
+        })
     }
 }

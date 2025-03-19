@@ -3,14 +3,15 @@
 use std::path::PathBuf;
 
 use clap::Args;
+use miette::IntoDiagnostic;
 
 use crate::{
     adapter::{spiget::SpigetPlugin, VersionSpec},
+    cli::PluginNotFoundError,
     cli::Subcommand,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
     session::IoSession,
-    subcommands::PluginNotFoundError,
 };
 
 /// The 'download' subcommand.
@@ -93,12 +94,8 @@ impl Download {
 }
 
 impl Subcommand for Download {
-    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<()> {
-        let manifest_name = &manifest.meta.manifest_name;
-
-        let Some(plugin_manifest) = manifest.plugin.get(manifest_name) else {
-            return Err(PluginNotFoundError(self.plugin_name.clone()).into());
-        };
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> miette::Result<()> {
+        let plugin_manifest = manifest.plugin(&self.plugin_name)?;
 
         match plugin_manifest {
             PluginDownloadSpec::Hangar(_) => todo!(),

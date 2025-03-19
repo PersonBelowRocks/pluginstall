@@ -2,32 +2,29 @@
 
 // TODO: allow this command to display info about a specific version too
 
-use std::str::FromStr;
-
 use clap::Args;
+use miette::{Context, IntoDiagnostic};
 use owo_colors::OwoColorize;
 
 use crate::{
     adapter::{
-        spiget::{SpigetPlugin, SpigetResourceDetails, VersionId},
-        PluginDetails, PluginVersion, VersionSpec,
+        spiget::{SpigetPlugin, SpigetResourceDetails},
+        PluginDetails, PluginVersion,
     },
     cli::Subcommand,
+    error::NotFoundError,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
     session::IoSession,
 };
 
-use super::{PluginNotFoundError, VersionSpecArgs};
+use super::{PluginSpecArgs, VersionSpecArgs};
 
 /// The 'info' subcommand.
 #[derive(Args, Debug, Clone)]
 pub struct Info {
-    #[arg(
-        value_name = "PLUGIN_NAME",
-        help = "The name of the plugin in the manifest file."
-    )]
-    pub plugin_name: String,
+    #[command(flatten)]
+    pub plugin: PluginSpecArgs,
     #[command(flatten)]
     pub version_spec: VersionSpecArgs,
 }
@@ -74,40 +71,36 @@ impl<P: PluginDetails, V: PluginVersion> DataDisplay for InfoOutput<P, V> {
 }
 
 impl Subcommand for Info {
-    async fn run(&self, session: &IoSession, manifest: &Manifest) -> anyhow::Result<()> {
-        let manifest_name = &self.plugin_name;
-
-        let Some(plugin_manifest) = manifest.plugin.get(manifest_name) else {
-            return Err(PluginNotFoundError(self.plugin_name.clone()).into());
-        };
-
-        let version_spec = self.version_spec.get_version_spec();
+    async fn run(&self, session: &IoSession, manifest: &Manifest) -> miette::Result<()> {
+        let plugin_manifest = manifest.plugin(&self.plugin.plugin_name)?;
+        let version_spec = self.version_spec.get();
 
         match plugin_manifest {
             PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
                 let spiget_plugin =
                     SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
 
-                let mut latest = false;
-                let version = match version_spec {
-                    VersionSpec::Name(name) => spiget_plugin.search_version(&name).await?,
-                    VersionSpec::Identifier(ident) => {
-                        let version_id = VersionId::from_str(&ident)?;
-                        spiget_plugin.version(version_id).await?
-                    }
-                    VersionSpec::Latest => {
-                        latest = true;
-                        spiget_plugin.latest_version().await?
-                    }
-                };
+                let latest = version_spec.is_latest();
+                let version = spiget_plugin
+                    .version_from_spec(&version_spec)?
+                    .ok_or(NotFoundError::Version)
+                    .wrap_err_with(|| {
+                        let resource_id = spiget_plugin_manifest.resource_id;
+                        format!(
+                            "Version '{version_spec}' could not be found for Spiget resource {resource_id}"
+                        )
+                    })?;
 
                 let out = InfoOutput {
-                    details: SpigetResourceDetails::new(spiget_plugin.resource_id(), manifest_name),
+                    details: SpigetResourceDetails::new(
+                        spiget_plugin.resource_id(),
+                        &self.plugin.plugin_name,
+                    ),
                     version,
                     latest,
                 };
 
-                session.cli_output().display(&out)?;
+                session.cli_output().display(&out).into_diagnostic()?;
             }
             _ => todo!(),
         }
