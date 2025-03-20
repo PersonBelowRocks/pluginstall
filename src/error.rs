@@ -71,3 +71,50 @@ pub enum NotFoundError {
 #[derive(thiserror::Error, miette::Diagnostic, Debug)]
 #[error("Unexpected response status: {0}")]
 pub struct UnexpectedHttpStatus(pub StatusCode);
+
+/// Helpers for easily creating diagnostics.
+pub mod diagnostics {
+    use std::path::Path;
+
+    use miette::{diagnostic, MietteDiagnostic};
+    use rq::header::{CACHE_CONTROL, CONTENT_DISPOSITION};
+
+    use crate::adapter::VersionSpec;
+
+    /// A "version not found" diagnostic.
+    #[inline]
+    pub fn version_not_found(
+        manifest_name: impl Into<String>,
+        version_spec: &VersionSpec,
+    ) -> MietteDiagnostic {
+        let manifest_name: String = manifest_name.into();
+        diagnostic!("Could not find version '{version_spec}' for plugin '{manifest_name}'")
+    }
+
+    /// An "invalid download directory" diagnostic. Usually emitted when trying to download into a directory that doesn't exist.
+    #[inline]
+    pub fn invalid_download_dir(dir: &Path) -> MietteDiagnostic {
+        diagnostic!(
+            "Cannot download to the directory '{}'",
+            dir.to_string_lossy()
+        )
+    }
+
+    /// An error indicating a missing content disposition header in a download response.
+    #[inline]
+    pub fn missing_content_disposition() -> MietteDiagnostic {
+        diagnostic!("Missing '{CONTENT_DISPOSITION}' header in response.")
+    }
+
+    /// An error with parsing the content disposition header, or the header did not specify a filename.
+    #[inline]
+    pub fn invalid_content_disposition() -> MietteDiagnostic {
+        diagnostic!("Error parsing the '{CONTENT_DISPOSITION}' header in response.")
+    }
+
+    /// An error with parsing the cache control header of a response.
+    #[inline]
+    pub fn invalid_cache_control() -> MietteDiagnostic {
+        diagnostic!("Error parsing the '{CACHE_CONTROL}' header in response.")
+    }
+}

@@ -83,14 +83,19 @@ impl Manifest {
         Ok(deser)
     }
 
+    /// Get a plugin described in the manifest under the given name.
+    ///
+    /// Errors with [`NotFoundError::ManifestPlugin`] if the plugin could not be found.
     #[inline]
-    pub fn plugin(&self, plugin_name: impl AsRef<str>) -> miette::Result<&PluginDownloadSpec> {
+    pub fn plugin(
+        &self,
+        plugin_name: impl AsRef<str>,
+    ) -> Result<&PluginDownloadSpec, NotFoundError> {
         let plugin_name = plugin_name.as_ref();
 
         self.plugin
             .get(plugin_name)
             .ok_or(NotFoundError::ManifestPlugin)
-            .wrap_err_with(|| format!("No plugin with name '{plugin_name}' found in the manifest."))
     }
 }
 

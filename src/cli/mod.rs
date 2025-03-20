@@ -72,7 +72,9 @@ pub struct OutputCtrlArgs {
 #[group(required = false, multiple = false)]
 pub struct VersionSpecArgs {
     /// The name of a version to search for.
-    /// If multiple versions have the same name, the latest version will be chosen.
+    /// If multiple versions have the same name, the latest version with that name will be chosen.
+    ///
+    /// If neither the version name, or version identifier are specified, then the latest version will be used.
     #[arg(long, short = 'V', value_name = "VERSION_NAME")]
     pub version_name: Option<String>,
     /// The unique version identifier of a version.
@@ -92,11 +94,11 @@ pub struct PluginSpecArgs {
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum Commands {
-    #[command(about = "List all versions of a plugin.")]
+    /// List all versions of a plugin.
     Versions(cli::Versions),
-    #[command(about = "Show info about a plugin.")]
+    /// Show info about a plugin.
     Info(cli::Info),
-    #[command(about = "Download a plugin.")]
+    /// Download a plugin.
     Download(cli::Download),
 }
 

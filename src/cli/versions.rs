@@ -23,27 +23,22 @@ use super::PluginSpecArgs;
 pub struct Versions {
     #[command(flatten)]
     pub plugin: PluginSpecArgs,
-    #[arg(
-        short = 'L',
-        long,
-        value_name = "LIMIT",
-        default_value = "10",
-        help = "The number of versions to list."
-    )]
+    /// The number of versions to list.
+    #[arg(short = 'L', long, value_name = "LIMIT", default_value = "10")]
+    /// Output the download URL for the versions in human-readable mode.
     pub limit: u64,
     #[arg(
         short = 'd',
         long,
         action = clap::ArgAction::SetTrue,
-        help = "Output the download URL for the versions in human-readable mode."
     )]
     pub download_url: bool,
+    /// The strftime/strptime format string for the release date of the versions.
     #[arg(
         short = 'F',
         long,
         value_name = "TIME_FORMAT",
-        default_value = "%Y-%m-%d",
-        help = "The strftime/strptime format string for the release date of the versions."
+        default_value = "%Y-%m-%d"
     )]
     pub time_format: String,
 }

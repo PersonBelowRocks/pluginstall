@@ -1,57 +1,38 @@
 //! The 'download' subcommand for downloading a plugin in the manifest.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
-use miette::IntoDiagnostic;
+use miette::{bail, Context, IntoDiagnostic};
+use owo_colors::{AnsiColors, OwoColorize};
 
 use crate::{
-    adapter::{spiget::SpigetPlugin, VersionSpec},
-    cli::PluginNotFoundError,
-    cli::Subcommand,
+    adapter::{spiget::SpigetPlugin, PluginApiType, VersionSpec},
+    cli::{PluginNotFoundError, Subcommand},
+    error::{diagnostics, NotFoundError},
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
-    session::IoSession,
+    session::{DownloadReport, DownloadSpec, IoSession},
 };
+
+use super::{PluginSpecArgs, VersionSpecArgs};
 
 /// The 'download' subcommand.
 #[derive(Args, Debug, Clone)]
 pub struct Download {
-    #[arg(
-        value_name = "PLUGIN_NAME",
-        help = "The name of the plugin in the manifest file."
-    )]
-    pub plugin_name: String,
-
-    #[arg(
-        short = 'o',
-        long,
-        value_name = "PATH",
-        help = "The directory to download the file into. By default the file will be downloaded into the working directory."
-    )]
+    #[command(flatten)]
+    pub plugin: PluginSpecArgs,
+    #[command(flatten)]
+    pub version: VersionSpecArgs,
+    /// The directory to download the file into. By default the file will be downloaded into the working directory.
+    #[arg(short = 'o', long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
-
-    #[arg(
-        short = 'V', // using a capital V since we might want to use lowercase 'v' for verbosity
-        long,
-        value_name = "VERSION_NAME",
-        help = "The version name of the plugin to download. If multiple versions with this name exist, then the most recent version will be downloaded."
-    )]
-    pub version_name: Option<String>,
-
-    #[arg(
-        short = 'I',
-        long = "version-ident",
-        value_name = "VERSION_IDENTIFIER",
-        help = "The version identifier of the plugin to download. A plugin can't have duplicate version identifiers."
-    )]
-    pub version_identifier: Option<String>,
 }
 
 /// The output of the 'download' subcommand.
 #[derive(Debug, serde::Serialize)]
 pub struct DownloadOutput {
-    pub download_size: u64,
+    pub report: DownloadReport,
     pub download_path: PathBuf,
 }
 
@@ -73,38 +54,75 @@ impl DataDisplay for DownloadOutput {
     }
 
     fn write_hr(&self, w: &mut impl std::io::Write) -> Result<(), std::io::Error> {
-        todo!()
-    }
-}
+        writeln!(
+            w,
+            "Downloaded plugin to '{}'",
+            self.download_path.to_string_lossy().green()
+        )?;
 
-impl Download {
-    /// Get the version spec provided to the command.
-    ///
-    /// Will return [`VersionSpec::Latest`] if neither were specified.
-    /// Will panic if both the version name and version identifier are specified.
-    #[inline]
-    fn get_version_spec(&self) -> VersionSpec {
-        match (self.version_identifier.as_ref(), self.version_name.as_ref()) {
-            (Some(version_ident), None) => VersionSpec::Identifier(version_ident.clone()),
-            (None, Some(version_name)) => VersionSpec::Name(version_name.clone()),
-            (None, None) => VersionSpec::Latest,
-            _ => panic!("You cannot specify both version identifier and version name."),
-        }
+        let cached = if self.report.cached {
+            "cached".color(AnsiColors::Green)
+        } else {
+            "not cached".color(AnsiColors::Yellow)
+        };
+
+        let download_size = pretty_bytes::converter::convert(self.report.download_size as _);
+
+        write!(w, "Download size: {0} ({1})", download_size.green(), cached)?;
+
+        Ok(())
     }
 }
 
 impl Subcommand for Download {
     async fn run(&self, session: &IoSession, manifest: &Manifest) -> miette::Result<()> {
-        let plugin_manifest = manifest.plugin(&self.plugin_name)?;
+        let plugin_manifest = manifest.plugin(&self.plugin.plugin_name)?;
 
         match plugin_manifest {
             PluginDownloadSpec::Hangar(_) => todo!(),
             PluginDownloadSpec::Jenkins => todo!(),
             PluginDownloadSpec::Spiget(spiget) => {
                 let plugin = SpigetPlugin::new(session, spiget.resource_id).await?;
+                let version_spec = self.version.get();
+
+                let out_dir = match &self.out_dir {
+                    None => Path::new(".").to_path_buf(), // by default download to working directory
+                    Some(path) => path.clone(),
+                };
+
+                // ensure the path is an existing directory
+                if !out_dir.exists() || !out_dir.is_dir() {
+                    bail!(diagnostics::invalid_download_dir(&out_dir));
+                }
+
+                let Some(version) = plugin.version_from_spec(&version_spec)? else {
+                    bail!(diagnostics::version_not_found(
+                        &self.plugin.plugin_name,
+                        &version_spec
+                    ));
+                };
+
+                let report = session
+                    .download_plugin(
+                        DownloadSpec {
+                            plugin_name: &self.plugin.plugin_name,
+                            version: &version,
+                            api_type: PluginApiType::Spiget,
+                        },
+                        &out_dir,
+                    )
+                    .await
+                    .wrap_err("Error downloading Spiget plugin")?;
+
+                let out = DownloadOutput {
+                    report,
+                    download_path: out_dir,
+                };
+
+                session.cli_output().display(&out).into_diagnostic()?;
             }
         }
 
-        todo!()
+        Ok(())
     }
 }

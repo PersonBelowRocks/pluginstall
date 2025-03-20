@@ -3,7 +3,7 @@
 // TODO: allow this command to display info about a specific version too
 
 use clap::Args;
-use miette::{Context, IntoDiagnostic};
+use miette::{bail, Context, IntoDiagnostic};
 use owo_colors::OwoColorize;
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
         PluginDetails, PluginVersion,
     },
     cli::Subcommand,
-    error::NotFoundError,
+    error::{diagnostics, NotFoundError},
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
     session::IoSession,
@@ -76,24 +76,20 @@ impl Subcommand for Info {
         let version_spec = self.version_spec.get();
 
         match plugin_manifest {
-            PluginDownloadSpec::Spiget(spiget_plugin_manifest) => {
-                let spiget_plugin =
-                    SpigetPlugin::new(&session, spiget_plugin_manifest.resource_id).await?;
+            PluginDownloadSpec::Spiget(spiget) => {
+                let plugin = SpigetPlugin::new(&session, spiget.resource_id).await?;
 
                 let latest = version_spec.is_latest();
-                let version = spiget_plugin
-                    .version_from_spec(&version_spec)?
-                    .ok_or(NotFoundError::Version)
-                    .wrap_err_with(|| {
-                        let resource_id = spiget_plugin_manifest.resource_id;
-                        format!(
-                            "Version '{version_spec}' could not be found for Spiget resource {resource_id}"
-                        )
-                    })?;
+                let Some(version) = plugin.version_from_spec(&version_spec)? else {
+                    bail!(diagnostics::version_not_found(
+                        &self.plugin.plugin_name,
+                        &version_spec
+                    ));
+                };
 
                 let out = InfoOutput {
                     details: SpigetResourceDetails::new(
-                        spiget_plugin.resource_id(),
+                        plugin.resource_id(),
                         &self.plugin.plugin_name,
                     ),
                     version,

@@ -19,7 +19,7 @@ pub const LOG_LEVEL_COLORS: [AnsiColors; 5] = [
 ];
 
 #[cfg(debug_assertions)]
-pub const LOG_LEVEL: LevelFilter = LevelFilter::Trace;
+pub const LOG_LEVEL: LevelFilter = LevelFilter::Debug;
 #[cfg(not(debug_assertions))]
 pub const LOG_LEVEL: LevelFilter = LevelFilter::Info;
 
@@ -64,14 +64,13 @@ pub fn content_disposition_file_name(content_disposition: &ContentDisposition) -
         .parameters
         .iter()
         .find_map(|param| -> Option<PathBuf> {
-            let DispositionParam::Filename(_charset, _language_tag, file_name) = param else {
+            let DispositionParam::Filename(.., file_name) = param else {
                 return None;
             };
 
             let utf8_file_name = String::from_utf8_lossy(file_name);
-            let path = PathBuf::from_str(utf8_file_name.as_ref()).unwrap();
-
-            Some(path)
+            let path_buf = Path::new(utf8_file_name.as_ref()).to_path_buf();
+            Some(path_buf)
         })
 }
 

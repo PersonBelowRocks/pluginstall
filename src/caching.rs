@@ -10,7 +10,7 @@ use chrono::Utc;
 use derive_new::new;
 use http_cache_reqwest::CACacheManager;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::adapter::PluginApiType;
@@ -141,6 +141,8 @@ impl DownloadCache {
     /// Attempt to open the cache index file on the disk.
     #[inline]
     async fn open_and_clear_index_file(&self) -> CacheResult<File> {
+        log::debug!("opening and clearing cache index");
+
         OpenOptions::new()
             .truncate(true)
             .write(true)
@@ -154,6 +156,8 @@ impl DownloadCache {
     /// This will clear existing data in the cache index file and overwrite it with the in-memory data.
     #[inline]
     async fn sync_index_to_fs(&self) -> CacheResult<()> {
+        log::debug!("syncing cache index to disk");
+
         let index = self.cache_index.read().await;
         // pretty format so its somewhat human readable
         let json =
@@ -163,7 +167,8 @@ impl DownloadCache {
 
         index_file.write_all(json.as_bytes()).await?;
         index_file.flush().await?;
-        index_file.sync_all().await?;
+
+        log::debug!("cache index synced");
 
         Ok(())
     }
@@ -196,6 +201,8 @@ impl DownloadCache {
         plugin_name: &str,
         version_identifier: &str,
     ) -> CacheResult<Option<CacheIndexFile>> {
+        log::debug!("deleting cached file");
+
         let mut cache_index = self.cache_index.write().await;
 
         let Entry::Occupied(mut plugin_entry) = cache_index.plugins.entry(plugin_name.to_string())
@@ -211,7 +218,7 @@ impl DownloadCache {
         }
 
         // remove the cached file
-        let cached_file_path = self.cache_datadir_path.join(&removed.file_name);
+        let cached_file_path = self.cache_datadir_path.join(&removed.cache_file_name);
         tokio::fs::remove_file(cached_file_path).await?;
 
         Ok(Some(removed))
@@ -225,6 +232,8 @@ impl DownloadCache {
         plugin_name: &str,
         version_identifier: &str,
     ) -> CacheResult<Option<CachedFile>> {
+        log::debug!("DownloadCache={:#?}", self);
+
         let meta = ok_none!(
             self.get_cached_plugin_metadata(plugin_name, version_identifier)
                 .await
@@ -257,6 +266,8 @@ impl DownloadCache {
         ttl: Option<chrono::Duration>,
         data: &[u8],
     ) -> CacheResult<()> {
+        log::debug!("caching file");
+
         let mut index = self.cache_index.write().await;
 
         let plugins = index
@@ -267,11 +278,19 @@ impl DownloadCache {
         let cache_file_name = compute_cache_file_name(plugin_name, version_identifier, plugin_type);
         let cache_file_path = self.cache_datadir_path.join(&cache_file_name);
 
+        log::debug!("creating file in cache");
+
         let mut file = File::create(&cache_file_path).await?;
 
+        log::debug!("writing data to cached file");
+
         file.write_all(data).await?;
+
+        log::debug!("flushing data to cached file");
+
         file.flush().await?;
-        file.sync_all().await?; // TODO: do we need to both flush and sync_all here? or is one of them enough
+
+        log::debug!("done caching file");
 
         let cache_index_file = CacheIndexFile {
             // current localtime
@@ -284,6 +303,9 @@ impl DownloadCache {
         plugins
             .versions
             .insert(version_identifier.to_string(), cache_index_file);
+
+        // release the cache index guard so that syncing won't freeze
+        drop(index);
 
         // finally make sure that the index is accurately represented on disk.
         self.sync_index_to_fs().await?;
@@ -299,6 +321,22 @@ pub struct CachedFile {
     pub meta: CacheIndexFile,
     /// Handle to the cached file's data.
     pub file: File,
+}
+
+impl CachedFile {
+    /// Copy this cached file to the given directory, with the original name of the downloaded file.
+    /// Returns the number of bytes copied (i.e., the size of the file).
+    #[inline]
+    pub async fn copy_to_directory(&mut self, dir: &Path) -> CacheResult<u64> {
+        let out_file_path = dir.join(&self.meta.file_name);
+        let mut out_file = File::create(&out_file_path).await?;
+
+        let copied = io::copy(&mut self.file, &mut out_file).await?;
+        self.file.rewind().await?; // rewind so future uses of this object will behave nicely
+        out_file.flush().await?; // flush the data to disk
+
+        Ok(copied)
+    }
 }
 
 /// The cache index. Deserialized from (and serialized to) the cache index file (`index.json`).
@@ -385,7 +423,7 @@ impl CacheIndexFile {
                     return true;
                 };
 
-                localtime <= expiry_datetime
+                localtime >= expiry_datetime
             }
             None => false,
         }
