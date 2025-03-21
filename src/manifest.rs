@@ -95,7 +95,7 @@ impl Manifest {
 
         self.plugin
             .get(plugin_name)
-            .ok_or(NotFoundError::ManifestPlugin)
+            .ok_or(NotFoundError::PluginInManifest)
     }
 }
 

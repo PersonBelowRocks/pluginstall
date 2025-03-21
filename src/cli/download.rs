@@ -8,8 +8,8 @@ use owo_colors::{AnsiColors, OwoColorize};
 
 use crate::{
     adapter::{spiget::SpigetPlugin, PluginApiType, VersionSpec},
-    cli::{PluginNotFoundError, Subcommand},
-    error::{diagnostics, NotFoundError},
+    cli::Subcommand,
+    error::diagnostics,
     manifest::{Manifest, PluginDownloadSpec},
     output::DataDisplay,
     session::{DownloadReport, DownloadSpec, IoSession},

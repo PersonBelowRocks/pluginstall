@@ -6,6 +6,14 @@ use rq::StatusCode;
 
 use crate::adapter::VersionSpec;
 
+macro_rules! simple_error {
+    ($name:ident, $message:literal) => {
+        #[derive(thiserror::Error, miette::Diagnostic, Debug, Clone)]
+        #[error($message)]
+        pub struct $name;
+    };
+}
+
 /// Error parsing data (like TOML or JSON).
 #[derive(thiserror::Error, miette::Diagnostic, Debug)]
 #[error("Error parsing provided data")]
@@ -60,9 +68,9 @@ pub enum ParseErrorCause {
 #[derive(thiserror::Error, miette::Diagnostic, Debug)]
 pub enum NotFoundError {
     #[error("Plugin was not found in the manifest.")]
-    ManifestPlugin,
+    PluginInManifest,
     #[error("Could not find plugin in API.")]
-    ApiPlugin,
+    PluginInApi,
     #[error("Could not find this version of the plugin.")]
     Version,
 }

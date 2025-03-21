@@ -342,7 +342,7 @@ impl SpigetApiClient {
 
         match response.status() {
             StatusCode::OK => Self::parse_response(response).await,
-            StatusCode::NOT_FOUND => Err(NotFoundError::ApiPlugin.into()),
+            StatusCode::NOT_FOUND => Err(NotFoundError::PluginInApi.into()),
             status @ _ => Err(UnexpectedHttpStatus(status).into()),
         }
         .wrap_err_with(|| format!("Error getting details of resource '{resource_id}'"))
@@ -376,7 +376,7 @@ impl SpigetApiClient {
 
         match response.status() {
             StatusCode::OK => Self::parse_response(response).await,
-            StatusCode::NOT_FOUND => Err(NotFoundError::ApiPlugin.into()),
+            StatusCode::NOT_FOUND => Err(NotFoundError::PluginInApi.into()),
             status @ _ => Err(UnexpectedHttpStatus(status).into()),
         }
         .wrap_err_with(|| format!("Error getting version list of resource '{resource_id}'"))

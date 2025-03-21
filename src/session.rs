@@ -16,7 +16,7 @@ use tokio::{fs::File, io::AsyncWriteExt};
 
 use crate::{
     adapter::{spiget::SpigetApiClient, PluginApiType, PluginVersion, VersionSpec},
-    caching::DownloadCache,
+    caching::{CacheError, DownloadCache},
     error::diagnostics::{
         invalid_cache_control, invalid_content_disposition, missing_content_disposition,
     },
@@ -94,16 +94,59 @@ impl IoSession {
         &self.cache
     }
 
+    /// Make a download HTTP request and cache the result.
+    /// This will always fetch the file from the network,
+    /// and never read from cache (although it will write to the cache).
+    #[inline]
+    async fn make_download_request<'a, V: PluginVersion>(
+        &self,
+        spec: DownloadSpec<'a, V>,
+        download_dir: &Path,
+    ) -> Result<DownloadReport, DownloadError> {
+        let url = spec.version.download_url().clone();
+        let response = self.client.get(url).send().await?;
+
+        let file_name = response_content_disposition_file_name(&response)?;
+        let ttl = response_downloaded_file_ttl(&response)?;
+
+        let file_path = download_dir.join(&file_name);
+
+        let response_data = response
+            .bytes()
+            .await
+            .map_err(reqwest_middleware::Error::Reqwest)?;
+
+        self.cache
+            .cache_file(
+                spec.plugin_name,
+                &spec.version.version_identifier(),
+                &file_name,
+                spec.api_type,
+                ttl,
+                &response_data,
+            )
+            .await?;
+
+        let download_size = response_data.len();
+
+        let mut file = File::create(file_path).await?;
+        file.write_all(&response_data).await?;
+        file.flush().await?;
+
+        Ok(DownloadReport {
+            download_size: download_size as _,
+            cached: false,
+        })
+    }
+
     /// Download the given version to the given path. Returns a [`DownloadReport`] upon success, describing details of this download.
     #[inline]
     pub async fn download_plugin<'a, V: PluginVersion>(
         &self,
         spec: DownloadSpec<'a, V>,
         download_dir: &Path,
-    ) -> miette::Result<DownloadReport> {
+    ) -> Result<DownloadReport, DownloadError> {
         let version_ident = spec.version.version_identifier();
-
-        log::debug!("getting cached file");
 
         let cached_file = self
             .download_cache()
@@ -111,91 +154,34 @@ impl IoSession {
             .await?;
 
         if !download_dir.is_dir() {
-            miette::bail!(
-                "'{}' is not a valid directory path",
-                download_dir.to_string_lossy()
-            );
+            return Err(DownloadError::InvalidDirectoryPath);
         }
 
         let report = match cached_file {
-            Some(mut cached_file) if !cached_file.meta.is_outdated() => {
-                log::debug!("retrieving file from cache");
-
-                let copied = cached_file
-                    .copy_to_directory(download_dir)
-                    .await
-                    .wrap_err("Error copying file from cache")?;
-                DownloadReport {
-                    download_size: copied,
-                    cached: true,
-                }
-            }
+            Some(mut cached_file) if !cached_file.meta.is_outdated() => DownloadReport {
+                download_size: cached_file.copy_to_directory(download_dir).await?,
+                cached: true,
+            },
             _ => {
-                log::debug!("downloading file");
-
-                let url = spec.version.download_url().clone();
-                let response = self
-                    .client
-                    .get(url)
-                    .send()
-                    .await
-                    .into_diagnostic()
-                    .wrap_err("Error downloading plugin")?;
-
-                let file_name = response_content_disposition_file_name(&response)?;
-                let ttl = response_downloaded_file_ttl(&response)?;
-
-                let file_path = download_dir.join(&file_name);
-
-                let response_data = response
-                    .bytes()
-                    .await
-                    .into_diagnostic()
-                    .wrap_err("Error reading response data")?;
-
-                log::debug!("read response data");
-
-                self.cache
-                    .cache_file(
-                        spec.plugin_name,
-                        &spec.version.version_identifier(),
-                        &file_name,
-                        spec.api_type,
-                        ttl,
-                        &response_data,
-                    )
-                    .await?;
-
-                log::debug!("cached downloaded file");
-
-                let download_size = response_data.len();
-
-                let mut file = File::create(file_path)
-                    .await
-                    .into_diagnostic()
-                    .wrap_err("Could not create file")?;
-
-                file.write_all(&response_data)
-                    .await
-                    .into_diagnostic()
-                    .wrap_err("Could not write download data to file")?;
-
-                file.flush()
-                    .await
-                    .into_diagnostic()
-                    .wrap_err("Error flushing data to disk")?;
-
-                log::debug!("wrote to download path");
-
-                DownloadReport {
-                    download_size: download_size as _,
-                    cached: false,
-                }
+                todo!()
             }
         };
 
         Ok(report)
     }
+}
+
+/// Error in download operation.
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
+pub enum DownloadError {
+    #[error("Path to download directory is invalid")]
+    InvalidDirectoryPath,
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("Cache error: {0}")]
+    Cache(#[from] CacheError),
+    #[error(transparent)]
+    Reqwest(#[from] reqwest_middleware::Error),
 }
 
 /// Get the file name specified in the content disposition header of a response, returning a diagnostic
@@ -266,7 +252,7 @@ pub struct DownloadReport {
 }
 
 /// Specifies the download of a specific version of a plugin.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct DownloadSpec<'a, V: PluginVersion> {
     /// The name of the plugin in the manifest. Used for cache operations.
     pub plugin_name: &'a str,

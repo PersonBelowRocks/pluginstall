@@ -8,9 +8,9 @@ chrono = { version = "0.4.40", features = ["serde"] }
 clap = { version = "4.5.21", features = ["derive"] }
 derive-new = "0.7.0"
 derive_more = { version = "2.0.1", features = ["full"] }
+directories = "6.0.0"
 env_logger = { version = "0.11.5", features = ["color"] }
 futures = "0.3.31"
-homedir = "0.3.4"
 http-cache-reqwest = "0.15.1"
 hyperx = { path = "./hyperx", features = ["compat", "headers"] }
 indexmap = "2.8.0"
