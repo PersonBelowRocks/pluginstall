@@ -9,7 +9,7 @@ use chrono::Utc;
 use derive_new::new;
 use directories::UserDirs;
 use http_cache_reqwest::CACacheManager;
-use tokio::fs::{self, File};
+use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
@@ -51,30 +51,6 @@ pub fn default_cache_directory_path() -> io::Result<PathBuf> {
     Ok(home_dir.join(DEFAULT_CACHE_DIRECTORY_NAME))
 }
 
-/// Create a cache at the given path. This will initialize the required files and subdirectories for the location
-/// to be a valid cache.
-#[inline]
-pub async fn create_cache(cache_path: &Path) -> io::Result<()> {
-    fs::create_dir_all(cache_path).await?;
-
-    let index_file_path = cache_path.join(CACHE_INDEX_FILE_NAME);
-    // create the index file with an empty map
-    if !index_file_path.is_file() {
-        File::create(index_file_path)
-            .await?
-            .write_all("{}".as_bytes())
-            .await?;
-    }
-
-    let data_dir_path = cache_path.join(CACHE_DATA_DIRECTORY_NAME);
-    // create the data directory
-    if !data_dir_path.is_dir() {
-        fs::create_dir(data_dir_path).await?;
-    }
-
-    Ok(())
-}
-
 /// Compute the name of a file with cached data of a plugin.
 #[inline]
 fn compute_cache_file_name(
@@ -100,6 +76,10 @@ impl DownloadCache {
     /// Will return an error if the cache is not present or has an invalid structure.
     #[inline]
     pub async fn new(cache_path: &Path) -> CacheResult<Self> {
+        if !cache_path.is_dir() {
+            fs::create_dir(&cache_path).await?;
+        }
+
         let data_path = cache_path.join(CACHE_DATA_DIRECTORY_NAME);
         // ensure that the data directory exists
         if !data_path.is_dir() {
@@ -107,19 +87,12 @@ impl DownloadCache {
         }
 
         let index_file_path = cache_path.join(CACHE_INDEX_FILE_NAME);
-        let cache_index = match CacheIndex::open(&index_file_path).await {
-            // try to create a cache index if one doesn't exist
-            Err(IndexError::Io(err)) if matches!(err.kind(), ErrorKind::NotFound) => {
-                CacheIndex::create_in_dir(cache_path).await?
-            }
-            Err(err) => {
-                return Err(match err {
-                    IndexError::Io(error) => CacheError::Io(error),
-                    IndexError::Parse(error) => CacheError::IndexParse(error),
-                })
-            }
-            Ok(index) => index,
-        };
+        let cache_index = CacheIndex::new(&index_file_path)
+            .await
+            .map_err(|err| match err {
+                IndexError::Io(err) => CacheError::Io(err),
+                IndexError::Parse(err) => CacheError::IndexParse(err),
+            })?;
 
         Ok(Self {
             cache_path: cache_path.to_path_buf(),
@@ -309,6 +282,7 @@ pub struct CachedPlugin {
     /// Cached versions of this resource.
     /// Maps a version identifier to a cached file.
     #[new(default)]
+    #[serde(default)]
     pub versions: HashMap<String, CachedPluginVersionFile>,
     /// The API this plugin was sourced from.
     pub source_api: PluginApiType,
@@ -337,38 +311,28 @@ pub enum IndexError {
 }
 
 impl CacheIndex {
-    /// Create a new index file in the given directory, overwriting any existing file named `index.json`.
+    /// Create a new cache index from the given path. If there's no cache index file at the given path,
+    /// this function will return an empty cache index for this path, which will be created and initialized
+    /// when [`CacheIndex::sync_to_disk`] is called for the first time.
     #[inline]
-    pub async fn create_in_dir(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub async fn new(path: impl AsRef<Path>) -> Result<Self, IndexError> {
         let path = path.as_ref();
 
-        let new = Self {
-            path: path.join(CACHE_INDEX_FILE_NAME),
-            plugins: IndexFilePlugins::default(),
+        let plugins = match File::open(path).await {
+            Ok(mut file) => {
+                let mut contents = String::new();
+                file.read_to_string(&mut contents).await?;
+                serde_json::from_str::<IndexFilePlugins>(&contents)
+                    .map_err(|err| ParseError::json(err, contents))?
+            }
+            // in this case the file will be created and written to lazily when needed
+            Err(err) if err.kind() == ErrorKind::NotFound => IndexFilePlugins::default(),
+            Err(err) => return Err(IndexError::Io(err)),
         };
 
-        // create/overwrite the index file
-        File::create(&new.path).await?;
-
-        // do an initial sync to populate the index file
-        new.sync_to_disk().await?;
-
-        Ok(new)
-    }
-
-    /// Open a cache index on disk.
-    #[inline]
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, IndexError> {
-        let path = path.as_ref();
-        let mut cache_index_file = File::open(path).await?;
-
-        let mut contents = String::new();
-        cache_index_file.read_to_string(&mut contents).await?;
-
         Ok(Self {
+            plugins,
             path: path.to_path_buf(),
-            plugins: serde_json::from_str(&contents)
-                .map_err(|err| ParseError::json(err, contents))?,
         })
     }
 
@@ -378,7 +342,7 @@ impl CacheIndex {
         let json = serde_json::to_string_pretty(&self.plugins)
             .expect("the serialize implementation is derived and shouldn't fail");
 
-        let mut file = File::open(&self.path).await?;
+        let mut file = File::create(&self.path).await?;
         file.write_all(json.as_bytes()).await?;
         file.flush().await?;
 

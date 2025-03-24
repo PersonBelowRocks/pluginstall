@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use derive_new::new;
-use miette::SourceOffset;
+use miette::{SourceOffset, SourceSpan};
 use rq::StatusCode;
 
 use crate::adapter::VersionSpec;
@@ -17,12 +17,14 @@ macro_rules! simple_error {
 /// Error parsing data (like TOML or JSON).
 #[derive(thiserror::Error, miette::Diagnostic, Debug)]
 #[error("Error parsing provided data")]
+#[diagnostic(severity(Error))]
 pub struct ParseError {
+    #[source]
     cause: ParseErrorCause,
     #[source_code]
     input: String,
-    #[label("{cause}")]
-    location: SourceOffset,
+    #[label = "{cause}"]
+    location: SourceSpan,
 }
 
 impl ParseError {
@@ -32,7 +34,7 @@ impl ParseError {
         let input: String = input.into();
 
         Self {
-            location: SourceOffset::from_location(&input, error.line(), error.column()),
+            location: SourceOffset::from_location(&input, error.line(), error.column()).into(),
             cause: ParseErrorCause::JsonError(error),
             input,
         }
@@ -43,10 +45,11 @@ impl ParseError {
     pub fn toml(error: toml::de::Error, input: impl Into<String>) -> Self {
         let input: String = input.into();
 
-        let span = error.span().map(|span| span.start).unwrap_or(0);
+        let span = error.span().unwrap_or(0..0);
+        let length = span.end - span.start;
 
         Self {
-            location: SourceOffset::from(span),
+            location: SourceSpan::new(SourceOffset::from(span.start), length),
             cause: ParseErrorCause::TomlError(error),
             input,
         }

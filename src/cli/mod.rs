@@ -16,7 +16,7 @@ use crate::adapter::VersionSpec;
 #[error("Could not find a plugin with the name '{0}' in the manifest.")]
 pub struct PluginNotFoundError(pub String);
 
-use crate::caching::{create_cache, default_cache_directory_path, CacheResult, DownloadCache};
+use crate::caching::{default_cache_directory_path, CacheResult, DownloadCache};
 use crate::cli;
 use crate::manifest::{Manifest, ManifestResult, DEFAULT_MANIFEST_FILE_NAME};
 use crate::output::CliOutput;
@@ -153,8 +153,6 @@ impl Cli {
         let path = match &self.cache {
             None => {
                 let path = default_cache_directory_path()?.join(manifest_name);
-                // create the default cache directory and its manifest subdirectory if they don't exist
-                create_cache(&path).await?;
                 Cow::Owned(path)
             }
             // if the user has specified a cache path, we just trust them that it exists and error later

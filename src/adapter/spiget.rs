@@ -318,7 +318,7 @@ impl SpigetApiClient {
             .wrap_err_with(|| format!("Error reading response data from '{url}'"))?;
 
         let deser = serde_json::from_str::<T>(&response_text)
-            .map_err(|error| ParseError::json(error, response_text))
+            .map_err(|error| ParseError::json(error, &response_text))
             .wrap_err_with(|| format!("Error parsing response JSON from '{url}'"))?;
 
         Ok(deser)

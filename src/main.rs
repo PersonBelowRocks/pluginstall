@@ -1,6 +1,8 @@
 extern crate derive_more as dm;
 extern crate reqwest as rq;
 
+use std::process::ExitCode;
+
 use crate::cli::Cli;
 use clap::Parser;
 use miette::IntoDiagnostic;

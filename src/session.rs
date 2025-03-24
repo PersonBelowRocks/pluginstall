@@ -104,7 +104,13 @@ impl IoSession {
         download_dir: &Path,
     ) -> Result<DownloadReport, DownloadError> {
         let url = spec.version.download_url().clone();
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get(url)
+            // we manually handle the caching of file downloads
+            .with_extension(CacheMode::NoStore)
+            .send()
+            .await?;
 
         let file_name = response_content_disposition_file_name(&response)?;
         let ttl = response_downloaded_file_ttl(&response)?;
@@ -162,9 +168,7 @@ impl IoSession {
                 download_size: cached_file.copy_to_directory(download_dir).await?,
                 cached: true,
             },
-            _ => {
-                todo!()
-            }
+            _ => self.make_download_request(spec, download_dir).await?,
         };
 
         Ok(report)
@@ -176,12 +180,30 @@ impl IoSession {
 pub enum DownloadError {
     #[error("Path to download directory is invalid")]
     InvalidDirectoryPath,
-    #[error(transparent)]
+    #[error("IO Error")]
     Io(#[from] io::Error),
-    #[error("Cache error: {0}")]
+    #[error("Cache error")]
     Cache(#[from] CacheError),
-    #[error(transparent)]
+    #[error("HTTP error")]
     Reqwest(#[from] reqwest_middleware::Error),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    CacheControl(#[from] CacheControlParseError),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ResponseFilename(#[from] ContentDispositionFilenameError),
+}
+
+/// Error returned by [`response_content_disposition_file_name`] (an internal function).
+/// Represents an error in getting a file name from the content disposition header of a response.
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
+pub enum ContentDispositionFilenameError {
+    #[error("Missing '{CONTENT_DISPOSITION}' header in response.")]
+    Missing,
+    #[error("Error parsing the file name from the '{CONTENT_DISPOSITION}' header in response.")]
+    Parse,
+    #[error("Response's '{CONTENT_DISPOSITION}' header had an invalid file name: '{0}'.")]
+    InvalidFilename(String),
 }
 
 /// Get the file name specified in the content disposition header of a response, returning a diagnostic
@@ -190,25 +212,35 @@ pub enum DownloadError {
 /// This function also does validation of the file name in the header, and errors if it's an invalid/unsafe
 /// file name to use on the local filesystem.
 #[inline]
-fn response_content_disposition_file_name(response: &rq::Response) -> miette::Result<String> {
+pub(crate) fn response_content_disposition_file_name(
+    response: &rq::Response,
+) -> Result<String, ContentDispositionFilenameError> {
     let content_disposition = ContentDisposition::parse_header(
         &response
             .headers()
             .get(CONTENT_DISPOSITION)
-            .wrap_err_with(missing_content_disposition)?,
+            .ok_or(ContentDispositionFilenameError::Missing)?,
     )
-    .into_diagnostic()
-    .wrap_err_with(invalid_content_disposition)?;
+    .ok()
+    .ok_or(ContentDispositionFilenameError::Parse)?;
 
     let file_name = content_disposition_file_name(&content_disposition)
-        .wrap_err_with(invalid_content_disposition)?;
+        .ok_or(ContentDispositionFilenameError::Parse)?;
 
     if !validate_file_name(&file_name) {
-        miette::bail!("Invalid file name specified by '{CONTENT_DISPOSITION}' header.");
+        return Err(ContentDispositionFilenameError::InvalidFilename(
+            file_name.to_string_lossy().into_owned(),
+        ));
     }
 
     Ok(file_name.to_string_lossy().into_owned())
 }
+
+/// Error returned by [`response_content_disposition_file_name`] (an internal function).
+/// Represents an error in parsing the contents of the cache control header of a response.
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
+#[error("Error parsing data in the '{CACHE_CONTROL}' header in response.")]
+pub struct CacheControlParseError;
 
 /// Get the TTL from the cache control header.
 /// Will return [`None`] if this response did not have a cache control header,
@@ -216,15 +248,17 @@ fn response_content_disposition_file_name(response: &rq::Response) -> miette::Re
 ///
 /// Will error if the cache control header was found but could not be parsed.
 #[inline]
-fn response_downloaded_file_ttl(response: &rq::Response) -> miette::Result<Option<TimeDelta>> {
+pub(crate) fn response_downloaded_file_ttl(
+    response: &rq::Response,
+) -> Result<Option<TimeDelta>, CacheControlParseError> {
     let cache_control = ok_none!(response
         .headers()
         .get(CACHE_CONTROL)
         .as_ref()
         .map(CacheControl::parse_header)
         .transpose()
-        .into_diagnostic()
-        .wrap_err_with(invalid_cache_control)?);
+        .ok()
+        .ok_or(CacheControlParseError)?);
 
     // ensure that we're allowed to cache this response
     if cache_control.contains(&CacheDirective::NoStore)
