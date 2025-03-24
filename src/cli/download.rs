@@ -80,7 +80,6 @@ impl Subcommand for Download {
 
         match plugin_manifest {
             PluginDownloadSpec::Hangar(_) => todo!(),
-            PluginDownloadSpec::Jenkins => todo!(),
             PluginDownloadSpec::Spiget(spiget) => {
                 let plugin = SpigetPlugin::new(session, spiget.resource_id).await?;
                 let version_spec = self.version.get();

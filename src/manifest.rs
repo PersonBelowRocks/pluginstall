@@ -39,8 +39,6 @@ pub enum PluginDownloadSpec {
     Hangar(ManifestHangarPlugin),
     /// Uses the Spiget API to download the plugin.
     Spiget(ManifestSpigetPlugin),
-    /// Gets a plugin from Jenkins using the Jenkins API.
-    Jenkins,
 }
 
 /// Error returned when trying to process a manifest file.

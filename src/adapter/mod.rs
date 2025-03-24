@@ -9,7 +9,6 @@ use rq::Url;
 use serde::ser::{SerializeMap, SerializeSeq};
 
 pub mod hangar;
-pub mod jenkins;
 pub mod spiget;
 
 /// The number of fields in a serialized [`PluginVersion`].
@@ -123,7 +122,6 @@ pub trait PluginDetails {
     /// The page URL will be the following depending on the API type:
     /// - Hangar: The plugin's page on https://hangar.papermc.io/
     /// - Spiget: The plugin's page on https://www.spigotmc.org/resources/
-    /// - Jenkins: It's complicated.
     fn page_url(&self) -> &Url;
 
     /// The type of API that this plugin comes from.
@@ -154,8 +152,6 @@ pub enum PluginApiType {
     Hangar,
     #[display("Spiget")]
     Spiget,
-    #[display("Jenkins")]
-    Jenkins,
 }
 
 /// A plugin version specification. Either a version name, a version identifier, or "latest" can be used to specify a version.
